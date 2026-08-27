@@ -16,6 +16,7 @@ export async function POST(request: Request) {
       extractedContent,
       research,
       sourceUrl,
+      sourceType = "Website",
       history = [],
     } = body;
 
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
           role: "system",
           content: `You are the research assistant for a URL Research Agent.
 
-Answer the user's question ONLY from the extracted source content and the generated research report below. The source URL is context only; do not browse it or use outside knowledge.
+Answer the user's question ONLY from the ${sourceType} source content and the generated research report below. The source URL is context only; do not browse it or use outside knowledge.
 
 Do not invent facts, fill gaps with assumptions, or claim that information is present when it is not. If the requested information cannot be found in either provided source, respond EXACTLY with:
 "${unavailableResponse}"

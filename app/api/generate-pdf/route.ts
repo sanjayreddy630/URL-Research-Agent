@@ -11,6 +11,7 @@ export async function POST(request: Request) {
       sourceType,
       contentSize,
       title,
+      transcriptStatus,
     } = body;
 
     if (!research) {
@@ -170,6 +171,15 @@ export async function POST(request: Request) {
       }`,
       11
     );
+
+    if (sourceType === "YouTube Video") {
+      addText(
+        `Transcript Status: ${
+          transcriptStatus || "Public transcript extracted successfully"
+        }`,
+        11
+      );
+    }
 
     y -= 15;
 

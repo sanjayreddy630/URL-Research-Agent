@@ -35,12 +35,26 @@ const workflowSteps = [
   },
 ];
 
+const youtubeWorkflowSteps = [
+  { number: "01", title: "Validating YouTube URL", description: "Checking the submitted YouTube video URL." },
+  { number: "02", title: "Extracting Video Information", description: "Reading the available video metadata." },
+  { number: "03", title: "Fetching Transcript", description: "Fetching available public captions." },
+  { number: "04", title: "Processing Transcript", description: "Cleaning the transcript for analysis." },
+  { number: "05", title: "Splitting Transcript into Chunks", description: "Preparing ordered transcript evidence." },
+  { number: "06", title: "Generating Summary", description: "Creating a concise transcript-based summary." },
+  { number: "07", title: "Generating Action Items", description: "Extracting practical steps from the transcript." },
+  { number: "08", title: "Verifying AI Output", description: "Checking claims and actions against the transcript." },
+  { number: "09", title: "Research Complete", description: "Your verified YouTube research is ready." },
+];
+
 interface AnalysisResult {
   sourceType: string;
   title: string;
   extractedContent: string;
   contentSize: number;
   research?: string;
+  pipeline?: "website" | "youtube";
+  transcriptStatus?: string;
 }
 
 interface ChatMessage {
@@ -64,6 +78,15 @@ function splitResearchSections(research: string) {
     .filter((section) => section.heading && section.content);
 }
 
+function isYouTubeInput(value: string) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "youtube.com" || hostname === "www.youtube.com" || hostname === "youtu.be";
+  } catch {
+    return false;
+  }
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -79,6 +102,9 @@ export default function Home() {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [chatError, setChatError] = useState("");
   const [copiedItem, setCopiedItem] = useState("");
+  const activeWorkflowSteps = isYouTubeInput(url)
+    ? youtubeWorkflowSteps
+    : workflowSteps;
 
   const copyText = async (text: string, item: string) => {
     try {
@@ -128,12 +154,14 @@ export default function Home() {
         extractedContent: data.extractedContent || "",
         contentSize: data.contentSize || 0,
         research: data.research || "",
+        pipeline: data.pipeline || "website",
+        transcriptStatus: data.transcriptStatus || "",
       });
       setChatMessages([]);
       setChatError("");
 
       // Mark all stages complete only after the API succeeds.
-      setCurrentStep(workflowSteps.length);
+      setCurrentStep(activeWorkflowSteps.length);
     } catch (err) {
       setIsAnalyzing(false);
 
@@ -174,6 +202,7 @@ export default function Home() {
           extractedContent: analysisResult.extractedContent,
           research: analysisResult.research || "",
           sourceUrl: url,
+          sourceType: analysisResult.sourceType,
           history: chatMessages,
         }),
       });
@@ -226,6 +255,7 @@ export default function Home() {
           sourceType: analysisResult.sourceType,
 
           contentSize: `${analysisResult.contentSize} characters`,
+          transcriptStatus: analysisResult.transcriptStatus,
 
           title: analysisResult.title,
         }),
@@ -264,7 +294,7 @@ export default function Home() {
   useEffect(() => {
     if (!isAnalyzing) return;
 
-    if (analysisResult && currentStep >= workflowSteps.length) {
+    if (analysisResult && currentStep >= activeWorkflowSteps.length) {
       const timer = setTimeout(() => {
         setIsAnalyzing(false);
         setShowResults(true);
@@ -273,7 +303,7 @@ export default function Home() {
       return () => clearTimeout(timer);
     }
 
-    if (!analysisResult && currentStep >= workflowSteps.length - 1) {
+    if (!analysisResult && currentStep >= activeWorkflowSteps.length - 1) {
       return;
     }
 
@@ -282,7 +312,7 @@ export default function Home() {
     }, 900);
 
     return () => clearTimeout(timer);
-  }, [isAnalyzing, currentStep, analysisResult]);
+  }, [isAnalyzing, currentStep, analysisResult, activeWorkflowSteps.length]);
 
   const resetToHome = () => {
     setIsAnalyzing(false);
@@ -425,7 +455,9 @@ export default function Home() {
                 <span>SOURCE TYPE</span>
 
                 <p>
-                  {analysisResult.sourceType}
+                  {analysisResult.pipeline === "youtube"
+                    ? "🎥 YouTube Video Research"
+                    : "🌐 Website Research"}
                 </p>
               </div>
 
@@ -647,7 +679,7 @@ export default function Home() {
 
               <span>
                 {Math.round(
-                  (currentStep / workflowSteps.length) * 100
+                  (currentStep / activeWorkflowSteps.length) * 100
                 )}
                 %
               </span>
@@ -658,7 +690,7 @@ export default function Home() {
                 className="progress-fill"
                 style={{
                   width: `${
-                    (currentStep / workflowSteps.length) * 100
+                    (currentStep / activeWorkflowSteps.length) * 100
                   }%`,
                 }}
               ></div>
@@ -666,7 +698,7 @@ export default function Home() {
           </div>
 
           <div className="processing-workflow">
-            {workflowSteps.map((step, index) => {
+            {activeWorkflowSteps.map((step, index) => {
               const isCompleted = index < currentStep;
               const isActive = index === currentStep;
               const isPending = index > currentStep;

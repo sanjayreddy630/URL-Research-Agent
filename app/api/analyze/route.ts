@@ -1,10 +1,156 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import Groq from "groq-sdk";
+import { chunkText } from "../../../lib/chunk-text";
+import {
+  extractYouTubeVideoId,
+  fetchYouTubeTitle,
+  fetchYouTubeTranscript,
+  isYouTubeUrl,
+} from "../../../lib/youtube";
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
+async function analyzeYouTube(url: string) {
+  const videoId = extractYouTubeVideoId(url);
+
+  if (!videoId) {
+    return NextResponse.json(
+      { success: false, error: "Invalid YouTube video URL" },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const [title, transcript] = await Promise.all([
+      fetchYouTubeTitle(url),
+      fetchYouTubeTranscript(videoId),
+    ]);
+    const chunks = chunkText(transcript);
+    const chunkSummaries: string[] = [];
+
+    for (const chunk of chunks) {
+      const completion = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content:
+              "Summarize only the provided video transcript excerpt in 2 concise sentences. Do not add outside information.",
+          },
+          { role: "user", content: chunk },
+        ],
+        model: "openai/gpt-oss-20b",
+        temperature: 0.2,
+        max_tokens: 180,
+      });
+      const summary = completion.choices[0]?.message?.content?.trim();
+      if (summary) chunkSummaries.push(summary);
+    }
+
+    const sourceForReport = chunkSummaries.join("\n").slice(0, 14000);
+    let report = "";
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const completion = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
+
+Create a concise report. The WHAT IT IS ABOUT section must be approximately 6-7 lines, not a long essay. Do not invent facts.
+
+Return EXACTLY these Markdown headings:
+
+### 1. 📋 Basic Information
+Include the video title, topic, and transcript status.
+
+### 2. 🔍 Key Findings
+List the most important supported points.
+
+### 3. 💡 Important Insights
+Give useful conclusions based only on the transcript.
+
+### 4. ⚠️ Things to Consider / Precautions
+List limitations, cautions, or claims that should be checked.
+
+### 5. ✅ Recommended Actions
+List practical actions, steps, or tools explicitly supported by the transcript.
+
+### 6. 🔎 Source Verification
+State that the report is grounded in the available transcript and that no independent fact-checking was performed.
+
+Transcript evidence:
+${sourceForReport}`,
+          },
+          {
+            role: "user",
+            content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: Public transcript extracted successfully.`,
+          },
+        ],
+        model: "openai/gpt-oss-20b",
+        temperature: 0.2,
+        max_tokens: 900,
+      });
+      report = completion.choices[0]?.message?.content?.trim() || "";
+
+      const verification = await groq.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content:
+              "Check whether the proposed report is grounded only in the provided transcript evidence, stays on topic, and has transcript-supported action items. Reply with PASS if it is grounded; otherwise reply FAIL.",
+          },
+          {
+            role: "user",
+            content: `Transcript evidence:\n${sourceForReport}\n\nProposed report:\n${report}`,
+          },
+        ],
+        model: "openai/gpt-oss-20b",
+        temperature: 0,
+        max_tokens: 20,
+      });
+      const verificationResult = verification.choices[0]?.message?.content
+        ?.trim()
+        .toUpperCase();
+
+      if (verificationResult?.includes("PASS") || attempt === 1) break;
+    }
+
+    if (!report) {
+      throw new Error("Unable to generate a YouTube research report");
+    }
+
+    return NextResponse.json({
+      success: true,
+      url,
+      title,
+      sourceType: "YouTube Video",
+      pipeline: "youtube",
+      transcript,
+      transcriptStatus: "Public transcript extracted successfully",
+      extractedContent: transcript,
+      contentSize: transcript.length,
+      research: report,
+    });
+  } catch (error) {
+    console.error("YouTube analysis error:", error);
+    const message =
+      error instanceof Error ? error.message : "Failed to analyze YouTube video";
+    const isTranscriptError = /transcript|caption/i.test(message);
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: isTranscriptError
+          ? "A public transcript is not available for this YouTube video."
+          : "Failed to analyze YouTube video",
+      },
+      { status: isTranscriptError ? 400 : 500 }
+    );
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -19,6 +165,10 @@ export async function POST(request: Request) {
         },
         { status: 400 }
       );
+    }
+
+    if (isYouTubeUrl(url)) {
+      return analyzeYouTube(url);
     }
 
     // Fetch website content
