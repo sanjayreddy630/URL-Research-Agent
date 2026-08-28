@@ -42,6 +42,7 @@ async function analyzeYouTube(url: string) {
           { role: "user", content: chunk },
         ],
         model: "openai/gpt-oss-20b",
+        reasoning_effort: "low",
         temperature: 0.2,
         max_tokens: 180,
       });
@@ -90,6 +91,7 @@ ${sourceForReport}`,
           },
         ],
         model: "openai/gpt-oss-20b",
+        reasoning_effort: "low",
         temperature: 0.2,
         max_tokens: 900,
       });
@@ -108,6 +110,7 @@ ${sourceForReport}`,
           },
         ],
         model: "openai/gpt-oss-20b",
+        reasoning_effort: "low",
         temperature: 0,
         max_tokens: 20,
       });
@@ -144,7 +147,7 @@ ${sourceForReport}`,
       {
         success: false,
         error: isTranscriptError
-          ? "A public transcript is not available for this YouTube video."
+          ? "This video has no transcript that the app can access. On YouTube, open the video menu and check that 'Show transcript' is available, then try again. Videos without public captions cannot be analyzed yet."
           : "Failed to analyze YouTube video",
       },
       { status: isTranscriptError ? 400 : 500 }
@@ -283,6 +286,7 @@ ${content}`,
         ],
 
         model: "openai/gpt-oss-20b",
+        reasoning_effort: "low",
         temperature: 0.3,
         max_tokens: 1200,
       });

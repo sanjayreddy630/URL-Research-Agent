@@ -71,6 +71,7 @@ ${research}`,
         },
       ],
       model: "openai/gpt-oss-20b",
+      reasoning_effort: "low",
       temperature: 0.2,
       max_tokens: 500,
     });
