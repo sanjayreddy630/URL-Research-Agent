@@ -84,16 +84,40 @@ async function createChatCompletion(
 }
 
 async function analyzeYouTube(url: string) {
+  let stage = "URL validation";
+  console.log("Step 1: URL received", url);
+  console.log("Step 2: Validating YouTube URL");
+
+  if (!isYouTubeUrl(url)) {
+    console.error("YouTube URL validation failed", { url });
+    return NextResponse.json(
+      { success: false, error: "Invalid YouTube URL.", stage },
+      { status: 400 }
+    );
+  }
+
+  stage = "video ID extraction";
+  console.log("Step 3: Extracting video ID");
   const videoId = extractYouTubeVideoId(url);
 
   if (!videoId) {
     return NextResponse.json(
-      { success: false, error: "Invalid YouTube video URL" },
+      {
+        success: false,
+        error: "Video ID extraction failed. YouTube video IDs must contain exactly 11 characters.",
+        stage,
+      },
       { status: 400 }
     );
   }
 
   try {
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error("GROQ_API_KEY is missing from the server environment.");
+    }
+
+    stage = "transcript extraction";
+    console.log("Step 4: Fetching transcript", { videoId });
     const titlePromise = fetchYouTubeTitle(url);
     let transcript: string;
     let transcriptStatus: string;
@@ -105,6 +129,8 @@ async function analyzeYouTube(url: string) {
       if (error instanceof Error && /too large/i.test(error.message)) {
         throw error;
       }
+      console.error("Transcript unavailable; attempting audio transcription", error);
+      stage = "audio transcription fallback";
       const audio = await downloadYouTubeAudio(videoId);
       const transcription = await groq.audio.transcriptions.create({
         file: await toFile(audio, `${videoId}.webm`),
@@ -116,10 +142,28 @@ async function analyzeYouTube(url: string) {
       }
       transcriptStatus = "Transcript generated from YouTube audio";
     }
+
+    if (!transcript.trim()) {
+      throw new Error("Empty transcript returned from YouTube.");
+    }
+
+    stage = "transcript processing";
+    console.log("Step 5: Processing transcript", {
+      videoId,
+      characters: transcript.length,
+    });
     const title = await titlePromise;
     const chunks = chunkText(transcript);
+    if (!chunks.length) {
+      throw new Error("Transcript processing produced no chunks.");
+    }
     const chunkSummaries = (await Promise.all(
       chunks.map(async (chunk) => {
+        stage = "Groq summarization";
+        console.log("Step 6: Calling Groq API", {
+          videoId,
+          chunkCharacters: chunk.length,
+        });
         const completion = await createChatCompletion({
           messages: [
             {
@@ -139,9 +183,14 @@ async function analyzeYouTube(url: string) {
     )).filter(Boolean);
 
     const sourceForReport = chunkSummaries.join("\n").slice(0, 14000);
+    if (!sourceForReport) {
+      throw new Error("Groq returned empty transcript summaries.");
+    }
     let report = "";
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      stage = "Groq report generation";
+      console.log("Step 6: Calling Groq API", { videoId, purpose: "report" });
       const completion = await createChatCompletion({
         messages: [
           {
@@ -185,6 +234,8 @@ ${sourceForReport}`,
       });
       report = completion.choices[0]?.message?.content?.trim() || "";
 
+      stage = "verification";
+      console.log("Step 7: Generating verification", { videoId });
       const verification = await createChatCompletion({
         messages: [
           {
@@ -213,6 +264,8 @@ ${sourceForReport}`,
       throw new Error("Unable to generate a YouTube research report");
     }
 
+    stage = "response generation";
+    console.log("Step 8: Returning response", { videoId });
     return NextResponse.json({
       success: true,
       url,
@@ -226,11 +279,16 @@ ${sourceForReport}`,
       research: report,
     });
   } catch (error) {
-    console.error("YouTube analysis error:", error);
+    console.error(`YouTube analysis error at ${stage}:`, error);
     const response = getYouTubeErrorResponse(error);
+    const detail = error instanceof Error ? error.message : "Unknown server error";
 
     return NextResponse.json(
-      { success: false, error: response.error },
+      {
+        success: false,
+        error: process.env.NODE_ENV === "development" ? detail : response.error,
+        stage,
+      },
       { status: response.status }
     );
   }
