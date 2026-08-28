@@ -181,7 +181,7 @@ ${sourceForReport}`,
     const message =
       error instanceof Error ? error.message : "Failed to analyze YouTube video";
     const isTranscriptError = /transcript|caption|audio/i.test(message);
-    const isAiError = /groq|model|api key|rate limit|quota|401|429/i.test(message);
+    const isAiError = /groq|model|api[_ ]key|invalid_api_key|rate limit|quota|401|429/i.test(message);
 
     return NextResponse.json(
       {
