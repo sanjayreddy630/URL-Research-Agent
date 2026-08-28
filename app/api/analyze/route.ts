@@ -157,35 +157,11 @@ async function analyzeYouTube(url: string) {
     if (!chunks.length) {
       throw new Error("Transcript processing produced no chunks.");
     }
-    const chunkSummaries = (await Promise.all(
-      chunks.map(async (chunk) => {
-        stage = "Groq summarization";
-        console.log("Step 6: Calling Groq API", {
-          videoId,
-          chunkCharacters: chunk.length,
-        });
-        const completion = await createChatCompletion({
-          messages: [
-            {
-              role: "system",
-              content:
-                "Summarize only the provided video transcript excerpt in 2 concise sentences. Do not add outside information.",
-            },
-            { role: "user", content: chunk },
-          ],
-          model: "openai/gpt-oss-20b",
-          reasoning_effort: "low",
-          temperature: 0.2,
-          max_tokens: 180,
-        });
-        return completion.choices[0]?.message?.content?.trim() || "";
-      })
-    )).filter(Boolean);
-
-    const sourceForReport = chunkSummaries.join("\n").slice(0, 14000);
-    if (!sourceForReport) {
-      throw new Error("Groq returned empty transcript summaries.");
-    }
+    console.log("Step 6: Preparing transcript evidence", {
+      videoId,
+      chunks: chunks.length,
+    });
+    const sourceForReport = chunks.join("\n").slice(0, 14000);
     let report = "";
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
