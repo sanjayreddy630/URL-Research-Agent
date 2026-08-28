@@ -118,26 +118,25 @@ async function analyzeYouTube(url: string) {
     }
     const title = await titlePromise;
     const chunks = chunkText(transcript);
-    const chunkSummaries: string[] = [];
-
-    for (const chunk of chunks) {
-      const completion = await createChatCompletion({
-        messages: [
-          {
-            role: "system",
-            content:
-              "Summarize only the provided video transcript excerpt in 2 concise sentences. Do not add outside information.",
-          },
-          { role: "user", content: chunk },
-        ],
-        model: "openai/gpt-oss-20b",
-        reasoning_effort: "low",
-        temperature: 0.2,
-        max_tokens: 180,
-      });
-      const summary = completion.choices[0]?.message?.content?.trim();
-      if (summary) chunkSummaries.push(summary);
-    }
+    const chunkSummaries = (await Promise.all(
+      chunks.map(async (chunk) => {
+        const completion = await createChatCompletion({
+          messages: [
+            {
+              role: "system",
+              content:
+                "Summarize only the provided video transcript excerpt in 2 concise sentences. Do not add outside information.",
+            },
+            { role: "user", content: chunk },
+          ],
+          model: "openai/gpt-oss-20b",
+          reasoning_effort: "low",
+          temperature: 0.2,
+          max_tokens: 180,
+        });
+        return completion.choices[0]?.message?.content?.trim() || "";
+      })
+    )).filter(Boolean);
 
     const sourceForReport = chunkSummaries.join("\n").slice(0, 14000);
     let report = "";
