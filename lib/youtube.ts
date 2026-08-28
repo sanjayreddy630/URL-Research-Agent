@@ -37,18 +37,33 @@ export function extractYouTubeVideoId(value: string): string | null {
 }
 
 export async function fetchYouTubeTranscript(videoId: string): Promise<string> {
-  const transcript = await YoutubeTranscript.fetchTranscript(videoId);
-  const text = transcript
-    .map((entry) => entry.text)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+  let lastError: unknown;
 
-  if (!text) {
-    throw new Error("No public transcript is available for this video.");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const transcript = await YoutubeTranscript.fetchTranscript(videoId);
+      const text = transcript
+        .map((entry) => entry.text)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!text) {
+        throw new Error("No public transcript is available for this video.");
+      }
+
+      return text;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
   }
 
-  return text;
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Unable to fetch the YouTube transcript.");
 }
 
 export async function fetchYouTubeTitle(url: string): Promise<string> {
