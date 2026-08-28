@@ -11,9 +11,56 @@ import {
   isYouTubeUrl,
 } from "../../../lib/youtube";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
+function getYouTubeErrorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : "Unknown YouTube error";
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    !process.env.GROQ_API_KEY ||
+    normalizedMessage.includes("invalid api key") ||
+    normalizedMessage.includes("invalid_api_key")
+  ) {
+    return {
+      error: "The AI service is not configured correctly. Add a valid GROQ_API_KEY to the server environment and redeploy.",
+      status: 500,
+    };
+  }
+  if (normalizedMessage.includes("too large") || normalizedMessage.includes("24 mb")) {
+    return {
+      error: "This YouTube transcript or audio is too large to analyze. Try a shorter video.",
+      status: 413,
+    };
+  }
+  if (/private|unavailable|not exist|removed|video id/.test(normalizedMessage)) {
+    return {
+      error: "This YouTube video does not exist, is private, or is unavailable.",
+      status: 404,
+    };
+  }
+  if (/transcript|caption|subtitle|audio|transcrib/.test(normalizedMessage)) {
+    return {
+      error: "This YouTube video has no accessible captions and audio transcription could not be completed.",
+      status: 400,
+    };
+  }
+  if (/rate limit|quota|429/.test(normalizedMessage)) {
+    return {
+      error: "The AI service rate limit or quota was reached. Please try again later.",
+      status: 429,
+    };
+  }
+  return {
+    error: "YouTube analysis failed on the server. Check the server terminal for the detailed error.",
+    status: 500,
+  };
+}
 
 async function createChatCompletion(
   request: ChatCompletionCreateParamsNonStreaming
@@ -54,7 +101,10 @@ async function analyzeYouTube(url: string) {
     try {
       transcript = await fetchYouTubeTranscript(videoId);
       transcriptStatus = "Public transcript extracted successfully";
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && /too large/i.test(error.message)) {
+        throw error;
+      }
       const audio = await downloadYouTubeAudio(videoId);
       const transcription = await groq.audio.transcriptions.create({
         file: await toFile(audio, `${videoId}.webm`),
@@ -178,21 +228,11 @@ ${sourceForReport}`,
     });
   } catch (error) {
     console.error("YouTube analysis error:", error);
-    const message =
-      error instanceof Error ? error.message : "Failed to analyze YouTube video";
-    const isTranscriptError = /transcript|caption|audio/i.test(message);
-    const isAiError = /groq|model|api[_ ]key|invalid_api_key|rate limit|quota|401|429/i.test(message);
+    const response = getYouTubeErrorResponse(error);
 
     return NextResponse.json(
-      {
-        success: false,
-        error: isTranscriptError
-          ? "This YouTube video could not be transcribed. It may be restricted, unavailable, or larger than the 24 MB audio limit. Try a shorter public video."
-          : isAiError
-            ? "The AI service could not complete this analysis. Check that GROQ_API_KEY is configured and has available usage."
-            : "YouTube processing failed on the server. Restart the app and try again.",
-      },
-      { status: isTranscriptError ? 400 : 500 }
+      { success: false, error: response.error },
+      { status: response.status }
     );
   }
 }
@@ -202,12 +242,29 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { url } = body;
 
-    if (!url) {
+    if (typeof url !== "string" || !url.trim()) {
       return NextResponse.json(
         {
           success: false,
           error: "URL is required",
         },
+        { status: 400 }
+      );
+    }
+
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "Please enter a valid URL." },
+        { status: 400 }
+      );
+    }
+
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return NextResponse.json(
+        { success: false, error: "Only HTTP and HTTPS URLs are supported." },
         { status: 400 }
       );
     }

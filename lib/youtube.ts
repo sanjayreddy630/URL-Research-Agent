@@ -2,12 +2,15 @@ import { YoutubeTranscript } from "youtube-transcript";
 import ytdl from "@distube/ytdl-core";
 
 const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
+const MAX_TRANSCRIPT_CHARACTERS = 120000;
+const VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
 
 export function isYouTubeUrl(value: string): boolean {
   try {
     const hostname = new URL(value).hostname.toLowerCase();
     return hostname === "youtube.com" ||
       hostname === "www.youtube.com" ||
+      hostname === "m.youtube.com" ||
       hostname === "youtu.be";
   } catch {
     return false;
@@ -20,17 +23,26 @@ export function extractYouTubeVideoId(value: string): string | null {
     const hostname = parsedUrl.hostname.toLowerCase();
 
     if (hostname === "youtu.be") {
-      return parsedUrl.pathname.slice(1).split("/")[0] || null;
+      const videoId = parsedUrl.pathname.slice(1).split("/")[0] || "";
+      return VIDEO_ID_PATTERN.test(videoId) ? videoId : null;
     }
 
-    if (hostname === "youtube.com" || hostname === "www.youtube.com") {
+    if (
+      hostname === "youtube.com" ||
+      hostname === "www.youtube.com" ||
+      hostname === "m.youtube.com"
+    ) {
+      let videoId: string | null = null;
       if (parsedUrl.pathname === "/watch") {
-        return parsedUrl.searchParams.get("v");
+        videoId = parsedUrl.searchParams.get("v");
+      } else if (
+        parsedUrl.pathname.startsWith("/shorts/") ||
+        parsedUrl.pathname.startsWith("/embed/")
+      ) {
+        videoId = parsedUrl.pathname.split("/")[2] || null;
       }
 
-      if (parsedUrl.pathname.startsWith("/shorts/") || parsedUrl.pathname.startsWith("/embed/")) {
-        return parsedUrl.pathname.split("/")[2] || null;
-      }
+      return videoId && VIDEO_ID_PATTERN.test(videoId) ? videoId : null;
     }
   } catch {
     return null;
@@ -53,6 +65,9 @@ export async function fetchYouTubeTranscript(videoId: string): Promise<string> {
 
       if (!text) {
         throw new Error("No public transcript is available for this video.");
+      }
+      if (text.length > MAX_TRANSCRIPT_CHARACTERS) {
+        throw new Error("The YouTube transcript is too large to analyze.");
       }
 
       return text;
