@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
-import Groq from "groq-sdk";
+import Groq, { toFile } from "groq-sdk";
 import { chunkText } from "../../../lib/chunk-text";
 import {
   extractYouTubeVideoId,
+  downloadYouTubeAudio,
   fetchYouTubeTitle,
   fetchYouTubeTranscript,
   isYouTubeUrl,
@@ -24,10 +25,26 @@ async function analyzeYouTube(url: string) {
   }
 
   try {
-    const [title, transcript] = await Promise.all([
-      fetchYouTubeTitle(url),
-      fetchYouTubeTranscript(videoId),
-    ]);
+    const titlePromise = fetchYouTubeTitle(url);
+    let transcript: string;
+    let transcriptStatus: string;
+
+    try {
+      transcript = await fetchYouTubeTranscript(videoId);
+      transcriptStatus = "Public transcript extracted successfully";
+    } catch {
+      const audio = await downloadYouTubeAudio(videoId);
+      const transcription = await groq.audio.transcriptions.create({
+        file: await toFile(audio, `${videoId}.webm`),
+        model: "whisper-large-v3-turbo",
+      });
+      transcript = transcription.text?.trim() || "";
+      if (!transcript) {
+        throw new Error("Unable to transcribe YouTube audio.");
+      }
+      transcriptStatus = "Transcript generated from YouTube audio";
+    }
+    const title = await titlePromise;
     const chunks = chunkText(transcript);
     const chunkSummaries: string[] = [];
 
@@ -87,7 +104,7 @@ ${sourceForReport}`,
           },
           {
             role: "user",
-            content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: Public transcript extracted successfully.`,
+            content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}.`,
           },
         ],
         model: "openai/gpt-oss-20b",
@@ -132,7 +149,7 @@ ${sourceForReport}`,
       sourceType: "YouTube Video",
       pipeline: "youtube",
       transcript,
-      transcriptStatus: "Public transcript extracted successfully",
+      transcriptStatus,
       extractedContent: transcript,
       contentSize: transcript.length,
       research: report,
@@ -141,13 +158,13 @@ ${sourceForReport}`,
     console.error("YouTube analysis error:", error);
     const message =
       error instanceof Error ? error.message : "Failed to analyze YouTube video";
-    const isTranscriptError = /transcript|caption/i.test(message);
+    const isTranscriptError = /transcript|caption|audio/i.test(message);
 
     return NextResponse.json(
       {
         success: false,
         error: isTranscriptError
-          ? "This video has no transcript that the app can access. On YouTube, open the video menu and check that 'Show transcript' is available, then try again. Videos without public captions cannot be analyzed yet."
+          ? "This YouTube video could not be transcribed. It may be restricted, unavailable, or larger than the 24 MB audio limit. Try a shorter public video."
           : "Failed to analyze YouTube video",
       },
       { status: isTranscriptError ? 400 : 500 }

@@ -1,4 +1,7 @@
 import { YoutubeTranscript } from "youtube-transcript";
+import ytdl from "@distube/ytdl-core";
+
+const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
 
 export function isYouTubeUrl(value: string): boolean {
   try {
@@ -64,6 +67,28 @@ export async function fetchYouTubeTranscript(videoId: string): Promise<string> {
   throw lastError instanceof Error
     ? lastError
     : new Error("Unable to fetch the YouTube transcript.");
+}
+
+export async function downloadYouTubeAudio(videoId: string): Promise<Buffer> {
+  const audioStream = ytdl(`https://www.youtube.com/watch?v=${videoId}`, {
+    filter: "audioonly",
+    quality: "lowestaudio",
+  });
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  return new Promise((resolve, reject) => {
+    audioStream.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_AUDIO_BYTES) {
+        audioStream.destroy(new Error("YouTube audio is larger than the 24 MB limit."));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    audioStream.on("end", () => resolve(Buffer.concat(chunks)));
+    audioStream.on("error", reject);
+  });
 }
 
 export async function fetchYouTubeTitle(url: string): Promise<string> {
