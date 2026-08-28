@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
 import Groq, { toFile } from "groq-sdk";
+import type { ChatCompletionCreateParamsNonStreaming } from "groq-sdk/resources/chat/completions";
 import { chunkText } from "../../../lib/chunk-text";
 import {
   extractYouTubeVideoId,
@@ -13,6 +14,27 @@ import {
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
+async function createChatCompletion(
+  request: ChatCompletionCreateParamsNonStreaming
+) {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await groq.chat.completions.create(request);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)));
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("The AI service could not complete the request.");
+}
 
 async function analyzeYouTube(url: string) {
   const videoId = extractYouTubeVideoId(url);
@@ -49,7 +71,7 @@ async function analyzeYouTube(url: string) {
     const chunkSummaries: string[] = [];
 
     for (const chunk of chunks) {
-      const completion = await groq.chat.completions.create({
+      const completion = await createChatCompletion({
         messages: [
           {
             role: "system",
@@ -71,7 +93,7 @@ async function analyzeYouTube(url: string) {
     let report = "";
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      const completion = await groq.chat.completions.create({
+      const completion = await createChatCompletion({
         messages: [
           {
             role: "system",
@@ -114,7 +136,7 @@ ${sourceForReport}`,
       });
       report = completion.choices[0]?.message?.content?.trim() || "";
 
-      const verification = await groq.chat.completions.create({
+      const verification = await createChatCompletion({
         messages: [
           {
             role: "system",
@@ -237,7 +259,7 @@ export async function POST(request: Request) {
 
     // Generate AI research report
     const completion =
-      await groq.chat.completions.create({
+      await createChatCompletion({
         messages: [
           {
             role: "system",
