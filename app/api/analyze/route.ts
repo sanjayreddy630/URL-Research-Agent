@@ -181,13 +181,16 @@ ${sourceForReport}`,
     const message =
       error instanceof Error ? error.message : "Failed to analyze YouTube video";
     const isTranscriptError = /transcript|caption|audio/i.test(message);
+    const isAiError = /groq|model|api key|rate limit|quota|401|429/i.test(message);
 
     return NextResponse.json(
       {
         success: false,
         error: isTranscriptError
           ? "This YouTube video could not be transcribed. It may be restricted, unavailable, or larger than the 24 MB audio limit. Try a shorter public video."
-          : "Failed to analyze YouTube video",
+          : isAiError
+            ? "The AI service could not complete this analysis. Check that GROQ_API_KEY is configured and has available usage."
+            : "YouTube processing failed on the server. Restart the app and try again.",
       },
       { status: isTranscriptError ? 400 : 500 }
     );
