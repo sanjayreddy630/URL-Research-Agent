@@ -205,20 +205,116 @@ async function analyzeYouTube(url: string) {
         console.error("Error stack:", transcriptError.stack);
       }
 
-      // No public transcript available - return clear error using enhanced error response
-      console.log(`YouTube Step 6: Transcript extraction failed for video ${videoId} - NOT attempting fallback`);
+      // No public transcript available - attempt fallback analysis based on accessible metadata
+      console.log(`YouTube Step 6: Transcript extraction failed for video ${videoId} - executing fallback metadata analysis`);
       
-      // Use the enhanced error response handler to map error to user-friendly message
-      const response = getYouTubeErrorResponse(transcriptError, videoId);
-      
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "transcript extraction",
-          error: response.error,
-        },
-        { status: response.status }
-      );
+      const errorResp = getYouTubeErrorResponse(transcriptError, videoId);
+      const restrictionReason = errorResp.error;
+
+      let title = "YouTube Video";
+      try {
+        title = await fetchYouTubeTitle(url).catch(() => "YouTube Video");
+      } catch (titleErr) {
+        console.error("YouTube fallback title extraction failed:", titleErr);
+      }
+
+      let fallbackReport = "";
+      if (process.env.GROQ_API_KEY) {
+        try {
+          const completion = await createChatCompletion({
+            messages: [
+              {
+                role: "system",
+                content: `You are a professional YouTube research agent.
+
+IMPORTANT: The full transcript for this YouTube video COULD NOT BE ACCESSED due to access restrictions or unavailable captions (${restrictionReason}).
+
+DO NOT invent, fabricate, or hallucinate video audio or transcript content.
+
+Generate a clear, transparent, 6-section Markdown report based strictly on the accessible video metadata provided.
+
+Return EXACTLY these Markdown headings:
+
+### 1. 📋 Basic Information
+- Video Title: ${title}
+- Video URL: ${url}
+- Status Notice: Full video transcript could NOT be retrieved (${restrictionReason}).
+
+### 2. 🔍 Key Findings
+- Note that detailed key findings from the video audio/transcript are unavailable because captions are disabled or restricted.
+- Summarize what can be identified from the public video title and URL structure.
+
+### 3. 💡 Important Insights
+- Provide general context on the topic implied by the video title (${title}).
+- Emphasize that specific claims or spoken points in the video cannot be verified without transcript access.
+
+### 4. ⚠️ Things to Consider / Precautions
+- Highlight that automated analysis could not verify spoken content or video claims.
+- Caution the user that restricted or private videos cannot be transcribed by external AI tools.
+
+### 5. ✅ Recommended Actions
+- Recommend watching the video directly on YouTube with audio or manual subtitles enabled.
+- Check if captions or transcripts become available in another language.
+
+### 6. 🔎 Source Verification
+- State explicitly: "Full video transcript was NOT accessible. This report is based solely on accessible YouTube metadata (Video Title and URL)."`,
+              },
+              {
+                role: "user",
+                content: `Video URL: ${url}\nVideo Title: ${title}\nRestriction Reason: ${restrictionReason}`,
+              },
+            ],
+            model: "openai/gpt-oss-20b",
+            reasoning_effort: "low",
+            temperature: 0.2,
+            max_tokens: 900,
+          });
+
+          fallbackReport = completion.choices[0]?.message?.content?.trim() || "";
+        } catch (groqErr) {
+          console.error("YouTube fallback Groq generation failed:", groqErr);
+        }
+      }
+
+      if (!fallbackReport) {
+        fallbackReport = `### 1. 📋 Basic Information
+- **Video Title:** ${title}
+- **Video URL:** ${url}
+- **Status Notice:** Full video transcript could NOT be retrieved (${restrictionReason}).
+
+### 2. 🔍 Key Findings
+- Detailed spoken content and transcript findings could not be extracted due to access restrictions.
+- Accessible metadata identifies the video title as "${title}".
+
+### 3. 💡 Important Insights
+- The video topic relates to "${title}".
+- Spoken claims, demonstrations, or detailed explanations require manual video viewing.
+
+### 4. ⚠️ Things to Consider / Precautions
+- Do not assume unverified transcript content exists.
+- Private, unlisted, or caption-disabled videos restrict automated content extraction.
+
+### 5. ✅ Recommended Actions
+- Open the video directly on YouTube: ${url}
+- Enable YouTube audio or manual captions in the video player settings.
+
+### 6. 🔎 Source Verification
+- **Verification Notice:** Full video transcript was NOT accessible. This report is based solely on accessible YouTube metadata (Video Title & URL).`;
+      }
+
+      return NextResponse.json({
+        success: true,
+        url,
+        title,
+        sourceType: "YouTube Video",
+        pipeline: "youtube",
+        transcript: "",
+        transcriptStatus: `Transcript Unavailable (${restrictionReason})`,
+        isRestricted: true,
+        extractedContent: `[Transcript Unavailable - ${restrictionReason}]\nVideo Title: ${title}\nVideo URL: ${url}`,
+        contentSize: 0,
+        research: fallbackReport,
+      });
     }
 
     if (!transcript.trim()) {
@@ -528,56 +624,161 @@ export async function POST(request: Request) {
     }
 
     // Fetch website content
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-      },
-    });
+    let response: Response | null = null;
+    let fetchErrorReason = "";
 
-    if (!response.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Unable to fetch the URL",
+    try {
+      response = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         },
-        { status: 400 }
-      );
+      });
+    } catch (fetchErr) {
+      fetchErrorReason = fetchErr instanceof Error ? fetchErr.message : "Network connection failed";
     }
 
-    const html = await response.text();
+    let title = parsedUrl.hostname;
+    let content = "";
+    let isExtractionSuccessful = false;
 
-    const $ = cheerio.load(html);
-    $("script, style, noscript, svg, template").remove();
+    if (response && response.ok) {
+      try {
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        $("script, style, noscript, svg, template").remove();
 
-    const title = $("title").first().text().replace(/\s+/g, " ").trim() ||
-      new URL(url).hostname;
+        const extractedTitle = $("title").first().text().replace(/\s+/g, " ").trim();
+        if (extractedTitle) {
+          title = extractedTitle;
+        }
 
-    const mainContent = $("main").text().trim();
-    const rawContent = mainContent.length >= 20
-      ? mainContent
-      : $("body").text().trim();
-    const content = rawContent.replace(/\s+/g, " ").trim().slice(0, 12000);
+        const mainContent = $("main").text().trim();
+        const rawContent = mainContent.length >= 20 ? mainContent : $("body").text().trim();
+        content = rawContent.replace(/\s+/g, " ").trim().slice(0, 12000);
 
-    // Check whether content was extracted
-    if (!content || content.length < 20) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Unable to extract meaningful content from this URL",
-        },
-        { status: 400 }
-      );
+        if (content && content.length >= 20) {
+          isExtractionSuccessful = true;
+        }
+      } catch (parseErr) {
+        console.error("HTML parsing error:", parseErr);
+      }
     }
 
-    // Generate AI research report
-    const completion =
-      await createChatCompletion({
-        messages: [
-          {
-            role: "system",
-            content: `
+    // ============ FALLBACK: RESTRICTED OR FAILED WEBSITE CONTENT ============
+    if (!isExtractionSuccessful) {
+      const restrictionReason =
+        fetchErrorReason ||
+        (response && !response.ok
+          ? `HTTP ${response.status} ${response.statusText || "Access Restricted"}`
+          : "Direct page content is protected, empty, or requires user authentication/JavaScript.");
+
+      console.log(`Website analysis falling back to metadata analysis for ${url} (Reason: ${restrictionReason})`);
+
+      let websiteFallbackReport = "";
+      if (process.env.GROQ_API_KEY) {
+        try {
+          const completion = await createChatCompletion({
+            messages: [
+              {
+                role: "system",
+                content: `You are a professional URL Research Agent.
+
+IMPORTANT: Direct full content extraction for this website COULD NOT BE ACCESSED or returned restricted/empty content (${restrictionReason}).
+
+DO NOT invent, fabricate, or hallucinate content from behind paywalls, login screens, or restricted sites.
+
+Generate a clear, transparent, 6-section Markdown report based strictly on the accessible URL metadata provided.
+
+Return EXACTLY these Markdown headings:
+
+### 1. 📋 Basic Information
+- Domain: ${parsedUrl.hostname}
+- Target URL: ${url}
+- Status Notice: Automated content extraction was restricted or failed (${restrictionReason}).
+
+### 2. 🔍 Key Findings
+- Note that detailed body content could not be retrieved due to site access controls (e.g. login requirement, paywall, anti-bot protection, or network failure).
+- Summarize what can be legitimately determined from the domain name and URL path.
+
+### 3. 💡 Important Insights
+- Provide general context on the domain topic implied by the URL structure.
+- Emphasize that specific page content or article text cannot be verified without direct access.
+
+### 4. ⚠️ Things to Consider / Precautions
+- Warn that automated crawlers cannot bypass security restrictions, paywalls, or login prompts.
+- Caution that unverified claims about the site should be checked directly by visiting the URL.
+
+### 5. ✅ Recommended Actions
+- Open the website directly in a standard browser: ${url}
+- If credentials or subscriptions are required, log in directly through the site's official portal.
+
+### 6. 🔎 Source Verification
+- State explicitly: "Full website content was NOT accessible. This report is based solely on accessible URL metadata (Domain & URL Path)."`,
+              },
+              {
+                role: "user",
+                content: `Target URL: ${url}\nDomain: ${parsedUrl.hostname}\nRestriction Reason: ${restrictionReason}`,
+              },
+            ],
+            model: "openai/gpt-oss-20b",
+            reasoning_effort: "low",
+            temperature: 0.2,
+            max_tokens: 900,
+          });
+
+          websiteFallbackReport = completion.choices[0]?.message?.content?.trim() || "";
+        } catch (groqErr) {
+          console.error("Website fallback Groq generation failed:", groqErr);
+        }
+      }
+
+      if (!websiteFallbackReport) {
+        websiteFallbackReport = `### 1. 📋 Basic Information
+- **Domain:** ${parsedUrl.hostname}
+- **Target URL:** ${url}
+- **Status Notice:** Automated content extraction was restricted or failed (${restrictionReason}).
+
+### 2. 🔍 Key Findings
+- Direct page text could not be extracted due to access restrictions or network limitations.
+- Accessible metadata identifies the domain as "${parsedUrl.hostname}".
+
+### 3. 💡 Important Insights
+- The target URL belongs to "${parsedUrl.hostname}".
+- Full page content could not be retrieved automatically without direct user session access.
+
+### 4. ⚠️ Things to Consider / Precautions
+- Do not assume unverified page contents.
+- Web pages with authentication, CAPTCHA, paywalls, or strict access policies restrict automated tools.
+
+### 5. ✅ Recommended Actions
+- Open the URL directly in your web browser: ${url}
+- Log in or complete authentication directly on the target site if required.
+
+### 6. 🔎 Source Verification
+- **Verification Notice:** Full website content was NOT accessible. This report is based solely on accessible URL metadata (Domain & URL Path).`;
+      }
+
+      return NextResponse.json({
+        success: true,
+        url,
+        title,
+        sourceType: "Website",
+        pipeline: "website",
+        extractedContent: `[Access Restricted or Failed - ${restrictionReason}]\nDomain: ${parsedUrl.hostname}\nURL: ${url}`,
+        contentSize: 0,
+        transcriptStatus: `Restricted Access (${restrictionReason})`,
+        isRestricted: true,
+        research: websiteFallbackReport,
+      });
+    }
+
+    // Generate AI research report for accessible content
+    const completion = await createChatCompletion({
+      messages: [
+        {
+          role: "system",
+          content: `
 You are a professional URL Research Agent.
 
 Analyze ONLY the extracted source content provided by the user.
@@ -624,25 +825,25 @@ Clear practical next steps for the user.
 ### 6. 🔎 Source Verification
 
 Explain that the answer is grounded in the extracted content.
-            `,
-          },
-          {
-            role: "user",
-            content: `Source URL: ${url}
+          `,
+        },
+        {
+          role: "user",
+          content: `Source URL: ${url}
 
 Source title: ${title}
 
 Extracted content:
 
 ${content}`,
-          },
-        ],
+        },
+      ],
 
-        model: "openai/gpt-oss-20b",
-        reasoning_effort: "low",
-        temperature: 0.3,
-        max_tokens: 1200,
-      });
+      model: "openai/gpt-oss-20b",
+      reasoning_effort: "low",
+      temperature: 0.3,
+      max_tokens: 1200,
+    });
 
     const aiResponse =
       completion.choices[0]?.message?.content ||
@@ -658,9 +859,13 @@ ${content}`,
 
       sourceType: "Website",
 
+      pipeline: "website",
+
       extractedContent: content,
 
       contentSize: content.length,
+
+      isRestricted: false,
 
       research: aiResponse,
     });

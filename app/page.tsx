@@ -91,6 +91,7 @@ interface AnalysisResult {
   research?: string;
   pipeline?: "website" | "youtube";
   transcriptStatus?: string;
+  isRestricted?: boolean;
 }
 
 interface ChatMessage {
@@ -294,6 +295,7 @@ export default function Home() {
         research: data.research || "",
         pipeline: data.pipeline || "website",
         transcriptStatus: data.transcriptStatus || "",
+        isRestricted: Boolean(data.isRestricted),
       });
 
       setChatMessages([]);
@@ -620,7 +622,9 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
               </div>
               <div className="banner-stat-item">
                 <span>Status</span>
-                <strong style={{ color: "#4ade80" }}>✓ Extracted</strong>
+                <strong style={{ color: activeResult.isRestricted ? "#f59e0b" : "#4ade80" }}>
+                  {activeResult.isRestricted ? "⚠️ Restricted Access" : "✓ Extracted"}
+                </strong>
               </div>
               <div className="banner-stat-item">
                 <span>Pipeline</span>
@@ -651,8 +655,16 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
                   >
                     📄 Export PDF
                   </button>
-                  <span style={{ padding: "4px 10px", borderRadius: "10px", background: "rgba(34, 197, 94, 0.15)", border: "1px solid rgba(34, 197, 94, 0.35)", color: "#4ade80", fontSize: "12px", fontWeight: 600 }}>
-                    ✓ Source Based
+                  <span style={{
+                    padding: "4px 10px",
+                    borderRadius: "10px",
+                    background: activeResult.isRestricted ? "rgba(245, 158, 11, 0.15)" : "rgba(34, 197, 94, 0.15)",
+                    border: activeResult.isRestricted ? "1px solid rgba(245, 158, 11, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
+                    color: activeResult.isRestricted ? "#fbbf24" : "#4ade80",
+                    fontSize: "12px",
+                    fontWeight: 600
+                  }}>
+                    {activeResult.isRestricted ? "⚠️ Restricted Source" : "✓ Source Based"}
                   </span>
                 </div>
               </div>
