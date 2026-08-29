@@ -17,10 +17,14 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-function getYouTubeErrorResponse(error: unknown) {
+function getYouTubeErrorResponse(error: unknown, videoId?: string) {
   const message = error instanceof Error ? error.message : "Unknown YouTube error";
   const normalizedMessage = message.toLowerCase();
 
+  // Log the exact error for debugging
+  console.error(`YouTube Error for video ${videoId}:`, message);
+
+  // GROQ API Key issues
   if (
     !process.env.GROQ_API_KEY ||
     normalizedMessage.includes("invalid api key") ||
@@ -32,34 +36,59 @@ function getYouTubeErrorResponse(error: unknown) {
       status: 500,
     };
   }
+
+  // Transcript size issues
   if (normalizedMessage.includes("too large") || normalizedMessage.includes("24 mb")) {
     return {
       error: "This YouTube transcript is too large to analyze. Try a shorter video.",
       status: 413,
     };
   }
-  if (/private|unavailable|not exist|removed|video id/.test(normalizedMessage)) {
+
+  // Video access issues (private, deleted, etc.)
+  if (/private|unavailable|not exist|removed|does not exist|video not found|video id/.test(normalizedMessage)) {
     return {
       error: "This YouTube video does not exist, is private, or is unavailable.",
       status: 404,
     };
   }
-  if (/transcript|caption|subtitle|transcrib|no public/.test(normalizedMessage)) {
+
+  // Transcript disabled or unavailable issues
+  if (/disabled|transcript disabled|transcript is disabled|captions disabled|captions are disabled|no captions|captions are unavailable|transcript unavailable|transcription not available|could not retrieve|could not find|could not get/.test(normalizedMessage)) {
     return {
-      error:
-        "No public transcript or captions are available for this YouTube video. Only videos with public captions or transcripts can be analyzed.",
+      error: "Transcript access is disabled for this video. Please try another YouTube video with captions enabled.",
       status: 400,
     };
   }
-  if (/rate limit|quota|429/.test(normalizedMessage)) {
+
+  // General transcript/caption issues
+  if (/transcript|caption|subtitle|transcrib|no public|captions|closed captions/.test(normalizedMessage)) {
+    return {
+      error:
+        "No public transcript or captions are available for this YouTube video. Please try another video with captions enabled.",
+      status: 400,
+    };
+  }
+
+  // Rate limiting
+  if (/rate limit|quota|429|too many request/.test(normalizedMessage)) {
     return {
       error: "The AI service rate limit or quota was reached. Please try again later.",
       status: 429,
     };
   }
+
+  // Fallback to generic message but with indication it's a transcript issue
+  if (message.length > 0) {
+    return {
+      error: `Unable to analyze this YouTube video: ${message}`,
+      status: 400,
+    };
+  }
+
   return {
-    error: "YouTube analysis failed on the server. Check the server terminal for the detailed error.",
-    status: 500,
+    error: "YouTube analysis failed. Please verify the video has public captions enabled and try again.",
+    status: 400,
   };
 }
 
@@ -156,34 +185,39 @@ async function analyzeYouTube(url: string) {
     }
 
     // ============ STEP 4: PRIMARY TRANSCRIPT EXTRACTION ============
-    console.log("YouTube Step 4: Attempting transcript extraction");
+    console.log("YouTube Step 4: Attempting transcript extraction", { videoId });
     let transcript: string = "";
     let transcriptStatus: string = "";
 
     try {
+      console.log(`Fetching transcript for video ID: ${videoId}`);
       transcript = await fetchYouTubeTranscript(videoId);
       transcriptStatus = "Public transcript extracted successfully";
       console.log("YouTube Step 5: Transcript extraction result: SUCCESS", {
+        videoId,
         transcriptLength: transcript.length,
       });
     } catch (transcriptError) {
-      console.error("YouTube Step 5: Transcript extraction result: FAILED");
+      console.error("YouTube Step 5: Transcript extraction result: FAILED", { videoId });
       console.error("EXACT ERROR:", transcriptError);
       if (transcriptError instanceof Error) {
-        console.error(transcriptError.message);
-        console.error(transcriptError.stack);
+        console.error("Error message:", transcriptError.message);
+        console.error("Error stack:", transcriptError.stack);
       }
 
-      // No public transcript available - return clear error (no fallback)
-      console.log("YouTube Step 6: No public transcript available - NOT attempting fallback (fallback removed for Vercel compatibility)");
+      // No public transcript available - return clear error using enhanced error response
+      console.log(`YouTube Step 6: Transcript extraction failed for video ${videoId} - NOT attempting fallback`);
+      
+      // Use the enhanced error response handler to map error to user-friendly message
+      const response = getYouTubeErrorResponse(transcriptError, videoId);
+      
       return NextResponse.json(
         {
           success: false,
           stage: "transcript extraction",
-          error:
-            "No public transcript or captions are available for this YouTube video. Only videos with public captions or transcripts can be analyzed.",
+          error: response.error,
         },
-        { status: 400 }
+        { status: response.status }
       );
     }
 
