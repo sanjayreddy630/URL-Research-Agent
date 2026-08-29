@@ -14,7 +14,9 @@ For websites, the system extracts website content and generates a structured res
 For YouTube videos, the system validates the video URL, processes the available transcript, handles long transcripts through chunking, generates a concise summary, creates action items, and performs verification to reduce unsupported or off-topic responses.
 
 ---
+Simple architecture:
 
+User URL → Validation → URL Type Detection → Content/Transcript Extraction → Chunking → AI Analysis → Reflection & Verification → Final Answer → PDF
 # 🎯 Problem Statement
 
 AI models can generate summaries quickly, but a major challenge is **hallucination**.
