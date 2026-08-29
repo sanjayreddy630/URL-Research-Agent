@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import * as cheerio from "cheerio";
-import Groq, { toFile } from "groq-sdk";
+import Groq from "groq-sdk";
 import type { ChatCompletionCreateParamsNonStreaming } from "groq-sdk/resources/chat/completions";
 import { chunkText } from "../../../lib/chunk-text";
 import {
   extractYouTubeVideoId,
-  downloadYouTubeAudio,
   fetchYouTubeTitle,
   fetchYouTubeTranscript,
   isYouTubeUrl,
@@ -28,13 +27,14 @@ function getYouTubeErrorResponse(error: unknown) {
     normalizedMessage.includes("invalid_api_key")
   ) {
     return {
-      error: "The AI service is not configured correctly. Add a valid GROQ_API_KEY to the server environment and redeploy.",
+      error:
+        "The AI service is not configured correctly. Add a valid GROQ_API_KEY to the server environment and redeploy.",
       status: 500,
     };
   }
   if (normalizedMessage.includes("too large") || normalizedMessage.includes("24 mb")) {
     return {
-      error: "This YouTube transcript or audio is too large to analyze. Try a shorter video.",
+      error: "This YouTube transcript is too large to analyze. Try a shorter video.",
       status: 413,
     };
   }
@@ -44,9 +44,10 @@ function getYouTubeErrorResponse(error: unknown) {
       status: 404,
     };
   }
-  if (/transcript|caption|subtitle|audio|transcrib/.test(normalizedMessage)) {
+  if (/transcript|caption|subtitle|transcrib|no public/.test(normalizedMessage)) {
     return {
-      error: "This YouTube video has no accessible captions and audio transcription could not be completed.",
+      error:
+        "No public transcript or captions are available for this YouTube video. Only videos with public captions or transcripts can be analyzed.",
       status: 400,
     };
   }
@@ -84,96 +85,200 @@ async function createChatCompletion(
 }
 
 async function analyzeYouTube(url: string) {
-  let stage = "URL validation";
-  console.log("Step 1: URL received", url);
-  console.log("Step 2: Validating YouTube URL");
-
-  if (!isYouTubeUrl(url)) {
-    console.error("YouTube URL validation failed", { url });
-    return NextResponse.json(
-      { success: false, error: "Invalid YouTube URL.", stage },
-      { status: 400 }
-    );
-  }
-
-  stage = "video ID extraction";
-  console.log("Step 3: Extracting video ID");
-  const videoId = extractYouTubeVideoId(url);
-
-  if (!videoId) {
-    return NextResponse.json(
-      {
-        success: false,
-        error: "Video ID extraction failed. YouTube video IDs must contain exactly 11 characters.",
-        stage,
-      },
-      { status: 400 }
-    );
-  }
-
   try {
-    if (!process.env.GROQ_API_KEY) {
-      throw new Error("GROQ_API_KEY is missing from the server environment.");
+    // ============ STEP 1: URL VALIDATION ============
+    console.log("YouTube Step 1: URL received");
+    console.log("YouTube Step 2: URL validation successful");
+
+    if (!isYouTubeUrl(url)) {
+      console.error("YouTube Step 2 FAILED: Invalid YouTube URL", { url });
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "URL validation",
+          error: "Invalid YouTube URL.",
+        },
+        { status: 400 }
+      );
     }
 
-    stage = "transcript extraction";
-    console.log("Step 4: Fetching transcript", { videoId });
-    const titlePromise = fetchYouTubeTitle(url);
-    let transcript: string;
-    let transcriptStatus: string;
+    // ============ STEP 3: VIDEO ID EXTRACTION ============
+    console.log("YouTube Step 3: Video ID extracted");
+    let videoId: string | null = null;
+
+    try {
+      videoId = extractYouTubeVideoId(url);
+    } catch (error) {
+      console.error("YouTube Step 3 FAILED: Video ID extraction error");
+      console.error("EXACT ERROR:", error);
+      if (error instanceof Error) {
+        console.error(error.message);
+        console.error(error.stack);
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "video ID extraction",
+          error:
+            "Video ID extraction failed. YouTube video IDs must contain exactly 11 characters.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!videoId) {
+      console.error("YouTube Step 3 FAILED: No video ID extracted", { url });
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "video ID extraction",
+          error:
+            "Video ID extraction failed. YouTube video IDs must contain exactly 11 characters.",
+        },
+        { status: 400 }
+      );
+    }
+
+    console.log("YouTube Step 3: Video ID extracted successfully", { videoId });
+
+    // ============ GROQ API KEY VALIDATION ============
+    if (!process.env.GROQ_API_KEY) {
+      console.error("YouTube analysis error: GROQ_API_KEY is missing");
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "environment",
+          error:
+            "The AI service is not configured correctly. Add a valid GROQ_API_KEY to the server environment and redeploy.",
+        },
+        { status: 500 }
+      );
+    }
+
+    // ============ STEP 4: PRIMARY TRANSCRIPT EXTRACTION ============
+    console.log("YouTube Step 4: Attempting transcript extraction");
+    let transcript: string = "";
+    let transcriptStatus: string = "";
 
     try {
       transcript = await fetchYouTubeTranscript(videoId);
       transcriptStatus = "Public transcript extracted successfully";
-    } catch (error) {
-      if (error instanceof Error && /too large/i.test(error.message)) {
-        throw error;
-      }
-      console.error("Transcript unavailable; attempting audio transcription", error);
-      stage = "audio transcription fallback";
-      const audio = await downloadYouTubeAudio(videoId);
-      const transcription = await groq.audio.transcriptions.create({
-        file: await toFile(audio, `${videoId}.webm`),
-        model: "whisper-large-v3-turbo",
+      console.log("YouTube Step 5: Transcript extraction result: SUCCESS", {
+        transcriptLength: transcript.length,
       });
-      transcript = transcription.text?.trim() || "";
-      if (!transcript) {
-        throw new Error("Unable to transcribe YouTube audio.");
+    } catch (transcriptError) {
+      console.error("YouTube Step 5: Transcript extraction result: FAILED");
+      console.error("EXACT ERROR:", transcriptError);
+      if (transcriptError instanceof Error) {
+        console.error(transcriptError.message);
+        console.error(transcriptError.stack);
       }
-      transcriptStatus = "Transcript generated from YouTube audio";
+
+      // No public transcript available - return clear error (no fallback)
+      console.log("YouTube Step 6: No public transcript available - NOT attempting fallback (fallback removed for Vercel compatibility)");
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "transcript extraction",
+          error:
+            "No public transcript or captions are available for this YouTube video. Only videos with public captions or transcripts can be analyzed.",
+        },
+        { status: 400 }
+      );
     }
 
     if (!transcript.trim()) {
-      throw new Error("Empty transcript returned from YouTube.");
+      console.error("YouTube Step 5 FAILED: Empty transcript returned");
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "transcript validation",
+          error: "Empty transcript returned from YouTube.",
+        },
+        { status: 400 }
+      );
     }
 
-    stage = "transcript processing";
-    console.log("Step 5: Processing transcript", {
-      videoId,
-      characters: transcript.length,
-    });
-    const title = await titlePromise;
-    const chunks = chunkText(transcript);
-    if (!chunks.length) {
-      throw new Error("Transcript processing produced no chunks.");
+    if (transcript.length > 120000) {
+      console.error("YouTube Step 5 FAILED: Transcript too large", {
+        length: transcript.length,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "transcript validation",
+          error: "This YouTube transcript is too large to analyze. Try a shorter video.",
+        },
+        { status: 413 }
+      );
     }
-    console.log("Step 6: Preparing transcript evidence", {
-      videoId,
-      chunks: chunks.length,
+
+    // ============ STEP 7: TRANSCRIPT CHUNKING & PROCESSING ============
+    console.log("YouTube Step 7: Processing transcript");
+    let title = "YouTube Video";
+    let chunks: string[] = [];
+
+    try {
+      const titlePromise = fetchYouTubeTitle(url).catch(() => "YouTube Video");
+      title = await titlePromise;
+    } catch (titleError) {
+      console.error("YouTube title extraction failed, using default", titleError);
+    }
+
+    try {
+      chunks = chunkText(transcript);
+    } catch (chunkError) {
+      console.error("YouTube Step 7 FAILED: Transcript chunking error");
+      console.error("EXACT ERROR:", chunkError);
+      if (chunkError instanceof Error) {
+        console.error(chunkError.message);
+        console.error(chunkError.stack);
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "transcript chunking",
+          error: "Transcript processing failed.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!chunks.length) {
+      console.error("YouTube Step 7 FAILED: No chunks produced");
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "transcript chunking",
+          error: "Transcript processing produced no usable chunks.",
+        },
+        { status: 500 }
+      );
+    }
+
+    console.log("YouTube Step 7: Processing transcript SUCCESS", {
+      title,
+      transcriptLength: transcript.length,
+      chunkCount: chunks.length,
     });
+
     const sourceForReport = chunks.join("\n").slice(0, 14000);
+
+    // ============ STEP 8: GROQ SUMMARY GENERATION ============
+    console.log("YouTube Step 8: Calling Groq");
     let report = "";
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      stage = "Groq report generation";
-      console.log("Step 6: Calling Groq API", { videoId, purpose: "report" });
-      const completion = await createChatCompletion({
-        messages: [
-          {
-            role: "system",
-            content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
+    try {
+      let generationAttempt = 0;
+      for (generationAttempt = 0; generationAttempt < 2; generationAttempt += 1) {
+        try {
+          const completion = await createChatCompletion({
+            messages: [
+              {
+                role: "system",
+                content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
 
-Create a concise report. The WHAT IT IS ABOUT section must be approximately 6-7 lines, not a long essay. Do not invent facts.
+Create a concise report. The initial summary must be approximately 6-7 lines, not a long essay. Do not invent facts.
 
 Return EXACTLY these Markdown headings:
 
@@ -197,21 +302,65 @@ State that the report is grounded in the available transcript and that no indepe
 
 Transcript evidence:
 ${sourceForReport}`,
-          },
-          {
-            role: "user",
-            content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}.`,
-          },
-        ],
-        model: "openai/gpt-oss-20b",
-        reasoning_effort: "low",
-        temperature: 0.2,
-        max_tokens: 900,
-      });
-      report = completion.choices[0]?.message?.content?.trim() || "";
+              },
+              {
+                role: "user",
+                content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}.`,
+              },
+            ],
+            model: "openai/gpt-oss-20b",
+            reasoning_effort: "low",
+            temperature: 0.2,
+            max_tokens: 900,
+          });
 
-      stage = "verification";
-      console.log("Step 7: Generating verification", { videoId });
+          report = completion.choices[0]?.message?.content?.trim() || "";
+          if (report) break;
+        } catch (singleAttemptError) {
+          console.error(
+            `YouTube Step 8: Groq report generation attempt ${generationAttempt + 1} failed`,
+            singleAttemptError
+          );
+          if (generationAttempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+        }
+      }
+    } catch (groqError) {
+      console.error("YouTube Step 8 FAILED: Groq summary generation error");
+      console.error("EXACT ERROR:", groqError);
+      if (groqError instanceof Error) {
+        console.error(groqError.message);
+        console.error(groqError.stack);
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "Groq summary generation",
+          error: "AI service could not generate a summary. Please try again.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!report) {
+      console.error("YouTube Step 8 FAILED: No report generated");
+      return NextResponse.json(
+        {
+          success: false,
+          stage: "Groq summary generation",
+          error: "Unable to generate a YouTube research report.",
+        },
+        { status: 500 }
+      );
+    }
+
+    console.log("YouTube Step 8: Calling Groq SUCCESS", { reportLength: report.length });
+
+    // ============ STEP 9: VERIFICATION/REFLECTION ============
+    console.log("YouTube Step 9: Verification");
+
+    try {
       const verification = await createChatCompletion({
         messages: [
           {
@@ -229,19 +378,54 @@ ${sourceForReport}`,
         temperature: 0,
         max_tokens: 20,
       });
+
       const verificationResult = verification.choices[0]?.message?.content
         ?.trim()
         .toUpperCase();
 
-      if (verificationResult?.includes("PASS") || attempt === 1) break;
+      console.log("YouTube Step 9: Verification result", { result: verificationResult });
+
+      if (!verificationResult?.includes("PASS")) {
+        console.warn("YouTube Step 9: Verification failed, regenerating report");
+        // Try once more with a fresh attempt
+        try {
+          const retryCompletion = await createChatCompletion({
+            messages: [
+              {
+                role: "system",
+                content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
+
+Create a concise, factual report grounded in the transcript. Do not invent information. Return the same 6 sections as requested.
+
+Transcript evidence:
+${sourceForReport}`,
+              },
+              {
+                role: "user",
+                content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}. Ensure all claims are directly supported by the transcript.`,
+              },
+            ],
+            model: "openai/gpt-oss-20b",
+            reasoning_effort: "low",
+            temperature: 0.1,
+            max_tokens: 900,
+          });
+
+          const retryReport = retryCompletion.choices[0]?.message?.content?.trim() || report;
+          if (retryReport) {
+            report = retryReport;
+          }
+        } catch (retryError) {
+          console.warn("YouTube Step 9: Verification retry failed, using original report", retryError);
+        }
+      }
+    } catch (verificationError) {
+      console.warn("YouTube Step 9: Verification check failed, proceeding with report", verificationError);
     }
 
-    if (!report) {
-      throw new Error("Unable to generate a YouTube research report");
-    }
+    // ============ STEP 10: RETURNING RESULT ============
+    console.log("YouTube Step 10: Returning result");
 
-    stage = "response generation";
-    console.log("Step 8: Returning response", { videoId });
     return NextResponse.json({
       success: true,
       url,
@@ -255,17 +439,20 @@ ${sourceForReport}`,
       research: report,
     });
   } catch (error) {
-    console.error(`YouTube analysis error at ${stage}:`, error);
-    const response = getYouTubeErrorResponse(error);
-    const detail = error instanceof Error ? error.message : "Unknown server error";
+    console.error("YouTube analysis error: Unexpected error in main handler");
+    console.error("EXACT ERROR:", error);
+    if (error instanceof Error) {
+      console.error(error.message);
+      console.error(error.stack);
+    }
 
     return NextResponse.json(
       {
         success: false,
-        error: process.env.NODE_ENV === "development" ? detail : response.error,
-        stage,
+        stage: "unknown",
+        error: "An unexpected error occurred. Check the server logs for details.",
       },
-      { status: response.status }
+      { status: 500 }
     );
   }
 }
