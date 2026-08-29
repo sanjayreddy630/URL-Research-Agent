@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:load": "k6 run load-test.js"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
