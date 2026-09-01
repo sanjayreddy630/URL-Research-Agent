@@ -1,6 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  SafetyBlockScreen,
+  ResearchHistoryPanel,
+  MultiSourceInput,
+  type SafetyBlockInfo,
+} from "@/components/research-ui";
+import {
+  saveHistoryToLocalStorage,
+  createHistoryItem,
+  getHistoryItemById,
+  type ResearchHistoryItem,
+} from "@/lib/research-history";
 
 const workflowSteps = [
   {
@@ -90,6 +102,12 @@ interface AnalysisResult {
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+interface MultiSourceResult {
+  report: string;
+  comparison: any;
+  sourceCount: number;
 }
 
 function splitResearchSections(research: string) {
@@ -202,6 +220,13 @@ export default function Home() {
   const [chatError, setChatError] = useState("");
   const [copiedItem, setCopiedItem] = useState("");
 
+  // New state for multi-source and safety features
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [safetyBlock, setSafetyBlock] = useState<SafetyBlockInfo | null>(null);
+  const [isMultiSourceMode, setIsMultiSourceMode] = useState(false);
+  const [multiSourceUrls, setMultiSourceUrls] = useState<string[]>([]);
+  const [multiSourceAnalysisResult, setMultiSourceAnalysisResult] = useState<MultiSourceResult | null>(null);
+
   const activeWorkflowSteps = isYouTubeInput(url)
     ? youtubeWorkflowSteps
     : workflowSteps;
@@ -222,6 +247,94 @@ export default function Home() {
       setTimeout(() => setCopiedItem(""), 1800);
     } catch (error) {
       console.error("Copy failed:", error);
+    }
+  };
+
+  // Handle selecting a research item from history
+  const handleSelectFromHistory = (id: string) => {
+    const item = getHistoryItemById(id);
+    if (item) {
+      setUrl(item.url);
+      setAnalysisResult({
+        sourceType: item.sourceType,
+        title: item.title,
+        extractedContent: item.extractedContent,
+        contentSize: item.extractedContent.length,
+        research: item.research,
+        pipeline: item.pipeline,
+        sourceLevel: item.sourceLevel,
+        isRestricted: false,
+        isPrivate: false,
+      });
+      setChatMessages([]);
+      setChatError("");
+      setShowResults(true);
+      setIsHistoryOpen(false);
+    }
+  };
+
+  // Handle multi-source analysis
+  const handleMultiSourceAnalyze = async (urls: string[]) => {
+    if (urls.length < 2) {
+      alert("Please add at least 2 sources");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setError("");
+
+    try {
+      // First, analyze all URLs individually
+      const analysisResults = [];
+      for (const u of urls) {
+        const response = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: u }),
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          if (data.isBlocked) {
+            setError(`Source blocked: ${u}`);
+            setIsAnalyzing(false);
+            return;
+          }
+          throw new Error(`Failed to analyze ${u}`);
+        }
+
+        analysisResults.push({
+          title: data.title,
+          url: u,
+          extractedContent: data.extractedContent,
+          research: data.research,
+          sourceLevel: data.sourceLevel,
+        });
+      }
+
+      // Then, generate combined report
+      const multiResponse = await fetch("/api/multi-source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sources: analysisResults }),
+      });
+
+      const multiData = await multiResponse.json();
+      if (!multiResponse.ok || !multiData.success) {
+        throw new Error("Failed to generate combined report");
+      }
+
+      setMultiSourceAnalysisResult({
+        report: multiData.report,
+        comparison: multiData.comparison,
+        sourceCount: multiData.sourceCount,
+      });
+
+      setShowResults(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Analysis failed");
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -252,6 +365,19 @@ export default function Home() {
       const data = await response.json();
 
       if (!response.ok || !data.success) {
+        // Check if this is a safety block
+        if (data.isBlocked) {
+          setSafetyBlock({
+            isBlocked: true,
+            error: data.error || "Analysis Unavailable",
+            reason: data.reason || "This URL cannot be processed",
+            url,
+          });
+          setIsAnalyzing(false);
+          setShowResults(false);
+          return;
+        }
+
         throw new Error(
           data.error || "Unable to analyze this URL."
         );
@@ -270,6 +396,21 @@ export default function Home() {
         isPrivate: Boolean(data.isPrivate),
         isRestricted: Boolean(data.isRestricted),
       });
+
+      // Save to history
+      const historyItem = createHistoryItem(
+        url,
+        data.sourceType || "Website",
+        data.title || "Untitled Source",
+        data.extractedContent || "",
+        data.research || "",
+        {
+          pipeline: data.pipeline,
+          sourceLevel: data.sourceLevel,
+          isSafe: true,
+        }
+      );
+      saveHistoryToLocalStorage(historyItem);
 
       setChatMessages([]);
       setChatError("");
@@ -605,6 +746,28 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
       <main style={{ minHeight: "100vh", backgroundColor: "#060b19" }}>
 
         <TopViewSwitcher currentView={currentView} setPreviewMode={setPreviewMode} />
+
+        {/* RESEARCH HISTORY PANEL */}
+        <ResearchHistoryPanel
+          isOpen={isHistoryOpen}
+          onClose={() => setIsHistoryOpen(false)}
+          onSelectItem={handleSelectFromHistory}
+        />
+
+        {/* SAFETY BLOCK SCREEN */}
+        {safetyBlock && !showResults && (
+          <SafetyBlockScreen
+            blockInfo={safetyBlock}
+            onRetry={() => {
+              setSafetyBlock(null);
+              resetToHome();
+            }}
+          />
+        )}
+
+        {/* MAIN CONTENT (only show if not blocked) */}
+        {!safetyBlock && (
+        <>
 
         {/* FLOATING NAVBAR */}
         <div className="navbar-floating-wrapper">
@@ -963,6 +1126,8 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
 
         </div>
 
+        </>
+        )}
       </main>
     );
   }
@@ -996,6 +1161,19 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
           </nav>
 
           <div className="nav-right-actions">
+            <button
+              className="nav-link"
+              type="button"
+              onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+              style={{
+                background: isHistoryOpen ? "rgba(139, 92, 246, 0.2)" : "transparent",
+                border: isHistoryOpen ? "1px solid rgba(168, 85, 247, 0.5)" : "none",
+                padding: "8px 16px",
+                borderRadius: "12px",
+              }}
+            >
+              📚 History
+            </button>
             <div className="system-ready-badge">
               <span className="green-dot"></span> System Ready
             </div>
@@ -1003,6 +1181,28 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
           </div>
         </header>
       </div>
+
+      {/* RESEARCH HISTORY PANEL */}
+      <ResearchHistoryPanel
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        onSelectItem={handleSelectFromHistory}
+      />
+
+      {/* SAFETY BLOCK SCREEN */}
+      {safetyBlock && !showResults && (
+        <SafetyBlockScreen
+          blockInfo={safetyBlock}
+          onRetry={() => {
+            setSafetyBlock(null);
+            resetToHome();
+          }}
+        />
+      )}
+
+      {/* MAIN CONTENT */}
+      {!safetyBlock && (
+      <>
 
       {/* HERO SECTION */}
       <section className="hero-section">
@@ -1024,7 +1224,39 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
             Our AI agent reads, analyzes, verifies, and summarizes content from YouTube videos, articles, documentation, and websites — all grounded in the source.
           </p>
 
-          {/* GRID ROW (INPUT CARD & WHY CARD) */}
+          {/* MODE SWITCHER */}
+          <div style={{
+            display: "flex",
+            gap: "12px",
+            justifyContent: "center",
+            marginBottom: "24px",
+          }}>
+            <button
+              className={`source-add-btn`}
+              onClick={() => setIsMultiSourceMode(false)}
+              style={{
+                background: !isMultiSourceMode ? "rgba(59, 130, 246, 0.35)" : "rgba(30, 41, 59, 0.5)",
+                border: !isMultiSourceMode ? "1px solid rgba(59, 130, 246, 0.6)" : "1px solid rgba(148, 163, 184, 0.2)",
+                color: !isMultiSourceMode ? "#60a5fa" : "#cbd5e1",
+              }}
+            >
+              🔍 Single Source
+            </button>
+            <button
+              className={`source-add-btn`}
+              onClick={() => setIsMultiSourceMode(true)}
+              style={{
+                background: isMultiSourceMode ? "rgba(59, 130, 246, 0.35)" : "rgba(30, 41, 59, 0.5)",
+                border: isMultiSourceMode ? "1px solid rgba(59, 130, 246, 0.6)" : "1px solid rgba(148, 163, 184, 0.2)",
+                color: isMultiSourceMode ? "#60a5fa" : "#cbd5e1",
+              }}
+            >
+              📚 Multi-Source
+            </button>
+          </div>
+
+          {/* GRID ROW (INPUT CARD & WHY CARD) OR MULTI-SOURCE */}
+          {!isMultiSourceMode ? (
           <div className="hero-grid-2col">
 
             {/* INPUT SECTION CARD */}
@@ -1148,6 +1380,15 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
             </div>
 
           </div>
+          ) : (
+          // Multi-source mode
+          <div style={{ maxWidth: "800px", margin: "0 auto", width: "100%" }}>
+            <MultiSourceInput
+              onAnalyze={handleMultiSourceAnalyze}
+              isAnalyzing={isAnalyzing}
+            />
+          </div>
+          )}
 
           {/* STATISTICS CAPSULE BANNER (MATCHING PHOTO EXACTLY) */}
           <div className="stats-capsule-banner">
@@ -1252,6 +1493,9 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
           </div>
         </div>
       </section>
+
+      </>
+      )}
 
     </main>
   );
