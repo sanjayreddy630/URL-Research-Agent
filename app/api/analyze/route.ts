@@ -15,6 +15,16 @@ import {
   fetchYouTubeTranscript,
   isYouTubeUrl,
 } from "../../../lib/youtube";
+import {
+  validateUrl,
+  isYouTubeUrl as isYTUrl,
+} from "../../../lib/url-validation";
+import {
+  checkYouTubeMetadataForSafety,
+  checkWebsiteMetadataForSafety,
+  checkFullContentForSafety,
+  shouldBlockContent,
+} from "../../../lib/content-safety";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -22,6 +32,24 @@ export const maxDuration = 60;
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
+
+/**
+ * Returns a safety block response
+ */
+function getSafetyBlockResponse(url: string, reason: string) {
+  return NextResponse.json(
+    {
+      success: false,
+      error: "Analysis Unavailable",
+      reason:
+        "This URL cannot be processed because the source contains or appears to contain content that is not supported by this research platform.",
+      details: reason,
+      isBlocked: true,
+      url,
+    },
+    { status: 400 }
+  );
+}
 
 function getYouTubeErrorResponse(error: unknown, videoId?: string) {
   const message = error instanceof Error ? error.message : "Unknown YouTube error";
@@ -165,6 +193,21 @@ async function analyzeYouTube(url: string) {
     console.log(`[YOUTUBE PIPELINE] Fetching official video metadata for ${videoId}...`);
     const metadata = await fetchYouTubeMetadata(videoId, url);
     const videoTitle = metadata.title || "YouTube Video";
+
+    // SAFETY CHECK: Check YouTube metadata for unsafe content
+    console.log(`[SAFETY CHECK] Scanning YouTube metadata for unsafe content...`);
+    const metadataSafetyCheck = checkYouTubeMetadataForSafety(
+      videoTitle,
+      metadata.description
+    );
+    
+    if (!metadataSafetyCheck.safe) {
+      console.error(`[SAFETY BLOCK] YouTube video blocked: ${metadataSafetyCheck.reason}`);
+      return getSafetyBlockResponse(
+        url,
+        metadataSafetyCheck.reason || "Video metadata contains blocked content"
+      );
+    }
 
     let transcript = "";
     let pipelineDisplay = "Transcript";
@@ -559,6 +602,23 @@ export async function POST(request: Request) {
       );
     }
 
+    // SAFETY CHECK STEP 1 & 2: Validate URL format and domain
+    console.log("[SAFETY CHECK] Step 1-2: Validating URL format and domain...");
+    const urlValidation = validateUrl(url);
+    
+    if (!urlValidation.valid) {
+      console.error(`[SAFETY BLOCK] Invalid URL: ${urlValidation.reason}`);
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Invalid or blocked URL",
+          reason: urlValidation.reason,
+          isBlocked: true,
+        },
+        { status: 400 }
+      );
+    }
+
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
@@ -619,6 +679,31 @@ export async function POST(request: Request) {
         }
       } catch (parseErr) {
         console.error("HTML parsing error:", parseErr);
+      }
+    }
+
+    // SAFETY CHECK STEP 3-4: Check metadata and content for unsafe patterns
+    if (isExtractionSuccessful) {
+      console.log("[SAFETY CHECK] Step 3-4: Checking website metadata and content for safety...");
+      
+      // Check metadata first (title + basic description)
+      const metadataSafetyCheck = checkWebsiteMetadataForSafety(title);
+      if (!metadataSafetyCheck.safe) {
+        console.error(`[SAFETY BLOCK] Website metadata blocked: ${metadataSafetyCheck.reason}`);
+        return getSafetyBlockResponse(
+          url,
+          metadataSafetyCheck.reason || "Website metadata contains blocked content"
+        );
+      }
+      
+      // Check full content for safety
+      const contentSafetyCheck = checkFullContentForSafety(content, title);
+      if (!contentSafetyCheck.safe && shouldBlockContent(contentSafetyCheck)) {
+        console.error(`[SAFETY BLOCK] Website content blocked: ${contentSafetyCheck.reason}`);
+        return getSafetyBlockResponse(
+          url,
+          contentSafetyCheck.reason || "Website content is not supported"
+        );
       }
     }
 
