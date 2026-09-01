@@ -17,6 +17,107 @@ For YouTube videos, the system validates the video URL, processes the available 
 Simple architecture:
 
 User URL → Validation → URL Type Detection → Content/Transcript Extraction → Chunking → AI Analysis → Reflection & Verification → Final Answer → PDF
+
+---
+
+# 🆕 NEW Features (v2.0)
+
+## 🎯 Major Enhancements
+
+### ✨ Professional Dark Navy UI
+- Clean, modern dark navy theme with blue & purple accents
+- Fully responsive design for all devices
+- Professional glass morphism components
+- Subtle, sophisticated visual effects
+
+### 📚 Multi-Source Research
+- Analyze 2-5 sources simultaneously
+- Automatic source comparison and analysis
+- Unified research report combining all sources
+- Identifies common findings and differences
+- Clearly attributes each finding to its source
+
+### 🔀 Source Comparison
+- Automatically finds common information across sources
+- Detects unique findings in each source
+- Identifies conflicting information
+- Professional comparison formatting
+- Source-aware recommendations
+
+### 💬 Enhanced Chat Assistant
+- Ask questions about analyzed research
+- Multi-source chat support
+- Strict source grounding to prevent hallucinations
+- Clear statements when information isn't available
+- Context-aware responses
+
+### 📋 Research History
+- Persistent research storage in browser
+- Quick access to previous analyses
+- One-click reload of past research
+- Delete individual items or clear all
+- Professional history sidebar
+
+### 🛡️ Comprehensive Safety System
+- **URL Validation**: Format and domain checking
+- **Domain Whitelist**: Trusted domains verification
+- **Content Scanning**: Detects unsafe content patterns
+- **YouTube Safety**: Validates video metadata before processing
+- **Layered Approach**: Multi-step safety checks
+
+### 🚫 Safety Block Screen
+- Professional blocking messages
+- Clear explanations without explicit details
+- One-click "Analyze Another URL" option
+- User-friendly communication
+
+### 🔒 AI Guardrails
+- Prevents hallucination and false claims
+- Sources grounded in retrieved content
+- Clear distinction between facts and analysis
+- Explicit statements when information unavailable
+- Professional, safe responses
+
+### 🏗️ Modular Architecture
+- Separate services for safety, history, comparison
+- Clean separation of concerns
+- Easier maintenance and testing
+- Prepared for future enhancements
+
+---
+
+# 🚀 Quick Start
+
+## Single-Source Analysis
+1. **Paste a URL** in the "Single Source" mode (default)
+2. **Click "Analyze"** to start the research pipeline
+3. **View Results** - Get structured research report in 7 sections
+4. **Ask Questions** - Use the AI chat to ask follow-up questions
+5. **Export** - Download your research as a PDF report
+
+## Multi-Source Analysis
+1. **Switch to "Multi-Source" mode** using the toggle button
+2. **Add 2-5 URLs** - Can be YouTube videos, articles, or websites
+3. **Click "Analyze"** - System analyzes all sources simultaneously
+4. **View Comparison** - See common findings and differences
+5. **Combined Report** - Get unified analysis with source attribution
+6. **Ask Questions** - Chat about all sources at once
+
+## Research History
+1. **Click "📚 History"** in the navigation bar
+2. **Select Previous Analysis** to reload it instantly
+3. **Manage History** - Delete items or clear all history
+4. **Persistent Storage** - Your research history is saved locally
+
+## Safety & Trust
+- The system automatically validates all URLs for safety
+- Blocks unsafe content with clear, professional explanations
+- Never processes inappropriate or harmful material
+- Always grounds AI responses in actual source content
+- Never hallucinate or invent information
+
+---
+
 # 🎯 Problem Statement
 
 AI models can generate summaries quickly, but a major challenge is **hallucination**.
@@ -44,7 +145,7 @@ This project explores how an AI research system can reduce such problems by:
 
 ---
 
-# ✨ Features
+# ✨ Original Features
 
 ## 🌐 Website Research
 
