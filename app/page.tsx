@@ -1021,6 +1021,9 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
 
         </div>
 
+        </>
+        )}
+
       </main>
     );
   }
@@ -1126,8 +1129,6 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
 
         </div>
 
-        </>
-        )}
       </main>
     );
   }
