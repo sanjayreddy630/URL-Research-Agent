@@ -22,11 +22,14 @@ async function generateCombinedReport(
     research: string;
   }[]
 ) {
-  if (sources.length < 2) {
-    return { error: "At least 2 sources are required for multi-source analysis" };
+  if (sources.length < 1) {
+    console.error("[generateCombinedReport] No sources provided");
+    return { error: "At least 1 source is required for analysis" };
   }
 
+  console.log(`[generateCombinedReport] Processing ${sources.length} source(s)`);
   try {
+    console.log(`[generateCombinedReport] Generating comparison for ${sources.length} source(s)`);
     // Generate comparison analysis
     const comparison = compareMultipleSources(
       sources.map(s => ({
@@ -35,8 +38,10 @@ async function generateCombinedReport(
       }))
     );
 
+    console.log("[generateCombinedReport] Comparison generated:", { commonFindings: comparison.commonFindings?.length, differences: comparison.differences?.length });
     const comparisonText = formatComparisonForDisplay(comparison);
     const sourceContext = buildMultiSourceContext(sources);
+    console.log(`[generateCombinedReport] Building Groq request for ${sources.length} sources`);
 
     // Generate combined research report
     const completion = await groq.chat.completions.create({
@@ -101,6 +106,7 @@ ${sourceContext}`,
     });
 
     const report = completion.choices[0]?.message?.content?.trim() || "";
+    console.log(`[generateCombinedReport] Report generated successfully (${report.length} chars)`);
 
     return {
       success: true,
@@ -109,10 +115,11 @@ ${sourceContext}`,
       sourceCount: sources.length,
     };
   } catch (error) {
-    console.error("Multi-source report generation failed:", error);
+    console.error("[generateCombinedReport] Error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     return {
       error: "Failed to generate combined research report",
-      details: error instanceof Error ? error.message : "Unknown error",
+      details: errorMessage,
     };
   }
 }
@@ -120,13 +127,16 @@ ${sourceContext}`,
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { sources } = body;
+    const { sources, failedSources } = body;
 
-    if (!Array.isArray(sources) || sources.length < 2) {
+    console.log(`[Multi-Source API] Received ${sources?.length || 0} sources, ${failedSources?.length || 0} failed`);
+
+    if (!Array.isArray(sources) || sources.length === 0) {
+      console.error("[Multi-Source API] No sources provided");
       return NextResponse.json(
         {
           success: false,
-          error: "At least 2 analyzed sources are required",
+          error: "At least 1 analyzed source is required",
         },
         { status: 400 }
       );
@@ -141,6 +151,12 @@ export async function POST(request: Request) {
         typeof source.extractedContent !== "string" ||
         typeof source.research !== "string"
       ) {
+        console.error(`[Multi-Source API] Source ${i + 1} validation failed:`, {
+          title: !!source.title,
+          url: !!source.url,
+          extractedContent: typeof source.extractedContent,
+          research: typeof source.research,
+        });
         return NextResponse.json(
           {
             success: false,
@@ -153,6 +169,7 @@ export async function POST(request: Request) {
 
     // Check if GROQ API key is configured
     if (!process.env.GROQ_API_KEY) {
+      console.error("[Multi-Source API] GROQ_API_KEY not configured");
       return NextResponse.json(
         {
           success: false,
@@ -162,9 +179,11 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log(`[Multi-Source API] Starting report generation with ${sources.length} sources`);
     const result = await generateCombinedReport(sources);
 
     if ("error" in result) {
+      console.error("[Multi-Source API] Report generation failed:", result.error, result.details);
       return NextResponse.json(
         {
           success: false,
@@ -175,6 +194,7 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log(`[Multi-Source API] Report generated successfully`);
     return NextResponse.json({
       success: true,
       report: result.report,
@@ -182,12 +202,13 @@ export async function POST(request: Request) {
       sourceCount: result.sourceCount,
     });
   } catch (error) {
-    console.error("Multi-source research error:", error);
+    console.error("[Multi-Source API] Unhandled error:", error);
 
     return NextResponse.json(
       {
         success: false,
         error: "Failed to process multi-source research request",
+        details: error instanceof Error ? error.message : "Unknown error",
       },
       { status: 500 }
     );

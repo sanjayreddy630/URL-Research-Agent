@@ -108,6 +108,8 @@ interface MultiSourceResult {
   report: string;
   comparison: any;
   sourceCount: number;
+  successfulSources?: number;
+  failedSources?: { url: string; reason: string }[];
 }
 
 function splitResearchSections(research: string) {
@@ -284,55 +286,109 @@ export default function Home() {
     setError("");
 
     try {
-      // First, analyze all URLs individually
+      // Analyze all URLs individually - collect successful ones and track failures
       const analysisResults = [];
-      for (const u of urls) {
-        const response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: u }),
-        });
+      const failedSources: { url: string; reason: string }[] = [];
 
-        const data = await response.json();
-        if (!response.ok || !data.success) {
+      console.log(`[Multi-Source] Starting analysis of ${urls.length} sources`);
+
+      for (let i = 0; i < urls.length; i++) {
+        const u = urls[i];
+        console.log(`[Multi-Source] Analyzing source ${i + 1}/${urls.length}: ${u}`);
+
+        try {
+          const response = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: u }),
+          });
+
+          const data = await response.json();
+          console.log(`[Multi-Source] Response for ${u}:`, { ok: response.ok, success: data.success, isBlocked: data.isBlocked });
+
           if (data.isBlocked) {
-            setError(`Source blocked: ${u}`);
-            setIsAnalyzing(false);
-            return;
+            const reason = data.reason || "Content blocked for safety reasons";
+            console.warn(`[Multi-Source] Source blocked: ${u} - ${reason}`);
+            failedSources.push({ url: u, reason: `Blocked: ${reason}` });
+            continue;
           }
-          throw new Error(`Failed to analyze ${u}`);
-        }
 
-        analysisResults.push({
-          title: data.title,
-          url: u,
-          extractedContent: data.extractedContent,
-          research: data.research,
-          sourceLevel: data.sourceLevel,
-        });
+          if (!response.ok || !data.success) {
+            const errorMsg = data.error || "Analysis failed";
+            console.warn(`[Multi-Source] Source failed: ${u} - ${errorMsg}`);
+            failedSources.push({ url: u, reason: errorMsg });
+            continue;
+          }
+
+          // Success - add to results
+          console.log(`[Multi-Source] Source succeeded: ${u}`);
+          analysisResults.push({
+            title: data.title || u,
+            url: u,
+            extractedContent: data.extractedContent || "",
+            research: data.research || "",
+            sourceLevel: data.sourceLevel || "FULL",
+          });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : "Unknown error";
+          console.error(`[Multi-Source] Exception analyzing ${u}:`, reason);
+          failedSources.push({ url: u, reason });
+        }
       }
 
-      // Then, generate combined report
+      console.log(`[Multi-Source] Analysis complete - Successful: ${analysisResults.length}, Failed: ${failedSources.length}`);
+
+      // Check if we have at least 1 successful source
+      if (analysisResults.length === 0) {
+        const failureMsg = failedSources.map(s => `• ${s.url}: ${s.reason}`).join("\n");
+        throw new Error(`All sources failed to analyze:\n${failureMsg}`);
+      }
+
+      // Show warning if some sources failed
+      if (failedSources.length > 0) {
+        const failureMsg = failedSources.map(s => `${s.url}: ${s.reason}`).join("; ");
+        console.warn(`[Multi-Source] Some sources failed: ${failureMsg}`);
+      }
+
+      // Then, generate combined report from successful sources
+      console.log(`[Multi-Source] Sending ${analysisResults.length} successful sources to API`);
       const multiResponse = await fetch("/api/multi-source", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sources: analysisResults }),
+        body: JSON.stringify({
+          sources: analysisResults,
+          failedSources: failedSources,
+        }),
       });
 
       const multiData = await multiResponse.json();
+      console.log(`[Multi-Source] API response:`, { ok: multiResponse.ok, success: multiData.success, error: multiData.error });
+
       if (!multiResponse.ok || !multiData.success) {
-        throw new Error("Failed to generate combined report");
+        throw new Error(multiData.error || "Failed to generate combined report");
       }
+
+      console.log(`[Multi-Source] Report generated successfully with ${multiData.sourceCount} sources`);
 
       setMultiSourceAnalysisResult({
         report: multiData.report,
         comparison: multiData.comparison,
         sourceCount: multiData.sourceCount,
+        successfulSources: analysisResults.length,
+        failedSources: failedSources,
       });
+
+      // Show warning message if some sources failed
+      if (failedSources.length > 0) {
+        const failureMsg = failedSources.map(s => `${s.url}`).join(", ");
+        setError(`Note: ${failedSources.length} source(s) could not be analyzed (${failureMsg}), but the report was generated from ${analysisResults.length} successful source(s)`);
+      }
 
       setShowResults(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed");
+      const errorMsg = err instanceof Error ? err.message : "Analysis failed";
+      console.error("[Multi-Source] Error:", errorMsg);
+      setError(errorMsg);
     } finally {
       setIsAnalyzing(false);
     }
