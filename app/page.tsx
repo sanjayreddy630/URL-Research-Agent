@@ -38,48 +38,38 @@ const workflowSteps = [
 const youtubeWorkflowSteps = [
   {
     number: "01",
-    title: "Validating YouTube URL",
-    description: "Checking the submitted YouTube video URL.",
+    title: "Validating URL",
+    description: "Checking YouTube URL structure and video ID.",
   },
   {
     number: "02",
-    title: "Extracting Video Information",
-    description: "Reading the available video metadata.",
+    title: "Fetching Video Information",
+    description: "Retrieving video metadata and title.",
   },
   {
     number: "03",
-    title: "Fetching Transcript",
-    description: "Fetching available public captions.",
+    title: "Retrieving Video Content",
+    description: "Fetching video transcript using fallbacks.",
   },
   {
     number: "04",
     title: "Processing Transcript",
-    description: "Cleaning the transcript for analysis.",
+    description: "Cleaning and chunking transcript content.",
   },
   {
     number: "05",
-    title: "Splitting Transcript into Chunks",
-    description: "Preparing ordered transcript evidence.",
+    title: "Analyzing Content",
+    description: "Generating grounded summary and action items.",
   },
   {
     number: "06",
-    title: "Generating Summary",
-    description: "Creating a concise transcript-based summary.",
+    title: "Verifying Output",
+    description: "Checking claims and summary constraints.",
   },
   {
     number: "07",
-    title: "Generating Action Items",
-    description: "Extracting practical steps from the transcript.",
-  },
-  {
-    number: "08",
-    title: "Verifying AI Output",
-    description: "Checking claims and actions against the transcript.",
-  },
-  {
-    number: "09",
-    title: "Research Complete",
-    description: "Your verified YouTube research is ready.",
+    title: "Generating Final Answer",
+    description: "Compiling verified research report.",
   },
 ];
 
@@ -91,6 +81,7 @@ interface AnalysisResult {
   research?: string;
   pipeline?: "website" | "youtube";
   transcriptStatus?: string;
+  sourceLevel?: "FULL" | "LIMITED" | "NONE";
   isRestricted?: boolean;
 }
 
@@ -108,47 +99,24 @@ function splitResearchSections(research: string) {
     .replace(/\r\n/g, "\n")
     .trim();
 
-  const matches = normalizedResearch.split(
-    /^(?:###?\s*(?:\d+\.\s*)?|(?:\*\*)?)(SUMMARY|KEY INSIGHTS|ACTION ITEMS|SOURCE VERIFICATION|VERIFICATION)(?:\*\*)?\s*:?\s*$/gim
-  );
+  const rawSections = normalizedResearch.split(/^###\s+/gm).filter(Boolean);
 
   const sections: {
     heading: string;
     content: string;
   }[] = [];
 
-  if (matches.length >= 3) {
-    for (let i = 1; i < matches.length; i += 2) {
-      const heading = matches[i]?.trim();
-      const content = matches[i + 1]?.trim();
+  for (const raw of rawSections) {
+    const lines = raw.split("\n");
+    const heading = lines[0]?.trim() || "";
+    const content = lines.slice(1).join("\n").trim();
 
-      if (heading && content) {
-        sections.push({
-          heading,
-          content,
-        });
-      }
+    if (heading && content) {
+      sections.push({
+        heading,
+        content,
+      });
     }
-  }
-
-  if (sections.length === 0) {
-    const numberedSections = normalizedResearch
-      .split(/^###\s+\d+\.\s+/gm)
-      .slice(1);
-
-    numberedSections.forEach((section) => {
-      const [heading, ...content] = section.split("\n");
-
-      const cleanHeading = heading?.trim() || "";
-      const cleanContent = content.join("\n").trim();
-
-      if (cleanHeading && cleanContent) {
-        sections.push({
-          heading: cleanHeading,
-          content: cleanContent,
-        });
-      }
-    });
   }
 
   return sections;
@@ -295,6 +263,7 @@ export default function Home() {
         research: data.research || "",
         pipeline: data.pipeline || "website",
         transcriptStatus: data.transcriptStatus || "",
+        sourceLevel: data.sourceLevel,
         isRestricted: Boolean(data.isRestricted),
       });
 
@@ -361,6 +330,8 @@ export default function Home() {
             sourceUrl: url,
             sourceType:
               analysisResult.sourceType,
+            sourceLevel:
+              analysisResult.sourceLevel,
             history: chatMessages,
           }),
         }
@@ -533,23 +504,77 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
 - AI research generated using extracted source content`,
   };
 
-  /* ==========================================================================
-     RESULTS PAGE VIEW
-     ========================================================================== */
-
   if (currentView === "results") {
     const activeResult = analysisResult || demoResult;
     const activeUrl = url || "https://youtu.be/ZWPGWBFkup4E7lsliM9VHZkdymP_75";
 
+    const activeLevel: "FULL" | "LIMITED" | "NONE" =
+      activeResult.sourceLevel ||
+      (activeResult.contentSize === 0 || !activeResult.extractedContent?.trim()
+        ? "NONE"
+        : activeResult.transcriptStatus === "LIMITED CONTENT AVAILABLE" || activeResult.isRestricted
+        ? "LIMITED"
+        : "FULL");
+
+    const isZeroContent = activeLevel === "NONE";
     const researchSections = splitResearchSections(activeResult.research || "");
     const rawResearch = activeResult.research?.trim() || "";
 
-    const displayChat = chatMessages.length > 0 ? chatMessages : [
-      { role: "user", content: "What are the main takeaways from this video?" },
-      { role: "assistant", content: "The main takeaways are:\n• AI fundamentals & types\n• Real-world applications\n• Future of AI & ML" },
-      { role: "user", content: "Give some action items." },
-      { role: "assistant", content: "Here are action items:\n• Start learning ML basics\n• Build small AI projects\n• Explore tools like Python, TensorFlow, and OpenAI" }
-    ];
+    const statusText =
+      activeLevel === "FULL"
+        ? "FULL CONTENT AVAILABLE"
+        : activeLevel === "LIMITED"
+        ? "LIMITED CONTENT AVAILABLE"
+        : "INSUFFICIENT CONTENT";
+
+    const badgeText =
+      activeLevel === "FULL"
+        ? "✓ Full Content Available"
+        : activeLevel === "LIMITED"
+        ? "⚠️ Limited Metadata"
+        : "⚠️ Insufficient Content";
+
+    const badgeColor =
+      activeLevel === "FULL"
+        ? "#4ade80"
+        : activeLevel === "LIMITED"
+        ? "#fbbf24"
+        : "#f87171";
+
+    const badgeBg =
+      activeLevel === "FULL"
+        ? "rgba(34, 197, 94, 0.15)"
+        : activeLevel === "LIMITED"
+        ? "rgba(245, 158, 11, 0.15)"
+        : "rgba(239, 68, 68, 0.15)";
+
+    const badgeBorder =
+      activeLevel === "FULL"
+        ? "1px solid rgba(34, 197, 94, 0.35)"
+        : activeLevel === "LIMITED"
+        ? "1px solid rgba(245, 158, 11, 0.35)"
+        : "1px solid rgba(239, 68, 68, 0.35)";
+
+    const displayChat: ChatMessage[] = chatMessages.length > 0
+      ? chatMessages
+      : activeLevel === "NONE"
+      ? [
+          {
+            role: "assistant",
+            content: "I could not retrieve sufficient source content from this video to answer questions about it reliably.",
+          },
+        ]
+      : activeLevel === "LIMITED"
+      ? [
+          {
+            role: "assistant",
+            content: "Full transcript was unavailable. I can answer questions based on the official video title, description, and metadata.",
+          },
+        ]
+      : [
+          { role: "user", content: "What are the main takeaways from this video?" },
+          { role: "assistant", content: "The main takeaways from the retrieved source are detailed in the research report." },
+        ];
 
     return (
       <main style={{ minHeight: "100vh", backgroundColor: "#060b19" }}>
@@ -571,7 +596,7 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
 
             <div className="nav-right-actions">
               <div className="system-ready-badge">
-                <span className="green-dot"></span> Report Ready
+                <span className="green-dot"></span> {isZeroContent ? "Analysis Complete" : "Report Ready"}
               </div>
               <span style={{ color: "#64748b", fontSize: "14px" }}>+</span>
               <button
@@ -614,7 +639,7 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
             <div className="banner-stats-row">
               <div className="banner-stat-item">
                 <span>Content Size</span>
-                <strong style={{ color: "#4ade80" }}>{activeResult.contentSize.toLocaleString()} characters</strong>
+                <strong style={{ color: isZeroContent ? "#f87171" : "#4ade80" }}>{activeResult.contentSize.toLocaleString()} characters</strong>
               </div>
               <div className="banner-stat-item">
                 <span>Source Type</span>
@@ -622,13 +647,13 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
               </div>
               <div className="banner-stat-item">
                 <span>Status</span>
-                <strong style={{ color: activeResult.isRestricted ? "#f59e0b" : "#4ade80" }}>
-                  {activeResult.isRestricted ? "⚠️ Restricted Access" : "✓ Extracted"}
+                <strong style={{ color: badgeColor }}>
+                  {statusText}
                 </strong>
               </div>
               <div className="banner-stat-item">
                 <span>Pipeline</span>
-                <strong>{activeResult.pipeline === "youtube" ? "Transcript Based" : "DOM Crawler"}</strong>
+                <strong>{activeResult.pipeline === "youtube" ? "YouTube Data API v3" : "DOM Crawler"}</strong>
               </div>
             </div>
           </div>
@@ -641,13 +666,15 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
                 <h3 style={{ fontSize: "18px", fontWeight: 700, color: "#ffffff" }}>AI Research Report</h3>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <button
-                    type="button"
-                    className="copy-report-btn"
-                    onClick={() => copyText(activeResult.research || "", "report")}
-                  >
-                    {copiedItem === "report" ? "✓ Copied" : "⧉ Copy"}
-                  </button>
+                  {!isZeroContent && (
+                    <button
+                      type="button"
+                      className="copy-report-btn"
+                      onClick={() => copyText(activeResult.research || "", "report")}
+                    >
+                      {copiedItem === "report" ? "✓ Copied" : "⧉ Copy"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="pdf-export-sm-btn"
@@ -658,22 +685,64 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
                   <span style={{
                     padding: "4px 10px",
                     borderRadius: "10px",
-                    background: activeResult.isRestricted ? "rgba(245, 158, 11, 0.15)" : "rgba(34, 197, 94, 0.15)",
-                    border: activeResult.isRestricted ? "1px solid rgba(245, 158, 11, 0.35)" : "1px solid rgba(34, 197, 94, 0.35)",
-                    color: activeResult.isRestricted ? "#fbbf24" : "#4ade80",
+                    background: badgeBg,
+                    border: badgeBorder,
+                    color: badgeColor,
                     fontSize: "12px",
                     fontWeight: 600
                   }}>
-                    {activeResult.isRestricted ? "⚠️ Restricted Source" : "✓ Source Based"}
+                    {badgeText}
                   </span>
                 </div>
               </div>
 
-              {researchSections.length > 0 ? (
+              {activeLevel === "LIMITED" && (
+                <div style={{
+                  padding: "12px 16px",
+                  borderRadius: "10px",
+                  background: "rgba(245, 158, 11, 0.12)",
+                  border: "1px solid rgba(245, 158, 11, 0.3)",
+                  color: "#fbbf24",
+                  fontSize: "13px",
+                  marginBottom: "14px",
+                  lineHeight: "1.5"
+                }}>
+                  ⚠️ <strong>Limited Analysis Notice:</strong> Limited analysis based on publicly available video metadata and description because a full transcript could not be retrieved.
+                </div>
+              )}
+
+              {activeLevel === "NONE" ? (
+                <div style={{
+                  padding: "24px",
+                  borderRadius: "14px",
+                  background: "rgba(239, 68, 68, 0.08)",
+                  border: "1px solid rgba(239, 68, 68, 0.25)",
+                  color: "#f87171",
+                  marginTop: "8px",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+                    <span style={{ fontSize: "22px" }}>⚠️</span>
+                    <h4 style={{ fontSize: "16px", fontWeight: 700, color: "#fca5a5", margin: 0 }}>
+                      Unable to retrieve sufficient public source information to generate a reliable analysis.
+                    </h4>
+                  </div>
+                  {activeResult.title && (
+                    <p style={{ fontSize: "14px", color: "#e2e8f0", marginBottom: "10px" }}>
+                      <strong>Video Title:</strong> {activeResult.title}
+                    </p>
+                  )}
+                  <p style={{ fontSize: "14px", color: "#f87171", marginBottom: "14px", lineHeight: "1.5" }}>
+                    <strong>Source Status:</strong> INSUFFICIENT CONTENT
+                  </p>
+                  <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, lineHeight: "1.5" }}>
+                    Summary, Key Findings, and Action Items are hidden because no transcript or meaningful official description could be retrieved for this video. The AI will not generate unverified or hallucinated content.
+                  </p>
+                </div>
+              ) : researchSections.length > 0 ? (
                 researchSections.map((section, idx) => (
-                  <details className="accordion-card" key={idx} open={idx === 0 || idx === 1}>
+                  <details className="accordion-card" key={idx} open={idx === 0 || idx === 1 || idx === 2}>
                     <summary>
-                      <span>{idx + 1}. {section.heading}</span>
+                      <span>{section.heading}</span>
                       <span style={{ fontSize: "11px", color: "#64748b" }}>▼</span>
                     </summary>
                     <div className="accordion-body">

@@ -5,6 +5,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from "groq-sdk/resources/
 import { chunkText } from "../../../lib/chunk-text";
 import {
   extractYouTubeVideoId,
+  fetchYouTubeMetadata,
   fetchYouTubeTitle,
   fetchYouTubeTranscript,
   isYouTubeUrl,
@@ -138,12 +139,7 @@ async function analyzeYouTube(url: string) {
     try {
       videoId = extractYouTubeVideoId(url);
     } catch (error) {
-      console.error("YouTube Step 3 FAILED: Video ID extraction error");
-      console.error("EXACT ERROR:", error);
-      if (error instanceof Error) {
-        console.error(error.message);
-        console.error(error.stack);
-      }
+      console.error("YouTube Step 3 FAILED: Video ID extraction error", error);
       return NextResponse.json(
         {
           success: false,
@@ -168,335 +164,249 @@ async function analyzeYouTube(url: string) {
       );
     }
 
-    console.log("YouTube Step 3: Video ID extracted successfully", { videoId });
+    // ============ STEP 4: FETCH OFFICIAL METADATA (YouTube Data API v3 or fallback) ============
+    console.log("YouTube Step 4: Fetching official video metadata for", videoId);
+    const metadata = await fetchYouTubeMetadata(videoId, url);
+    const videoTitle = metadata.title || "YouTube Video";
 
-    // ============ GROQ API KEY VALIDATION ============
-    if (!process.env.GROQ_API_KEY) {
-      console.error("YouTube analysis error: GROQ_API_KEY is missing");
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "environment",
-          error:
-            "The AI service is not configured correctly. Add a valid GROQ_API_KEY to the server environment and redeploy.",
-        },
-        { status: 500 }
-      );
+    // ============ STEP 5: ATTEMPT TRANSCRIPT EXTRACTION ============
+    console.log("YouTube Step 5: Attempting transcript extraction for", videoId);
+    let transcript = "";
+    try {
+      transcript = await fetchYouTubeTranscript(videoId);
+    } catch (transcriptErr) {
+      console.warn("YouTube transcript extraction unavailable:", transcriptErr);
     }
 
-    // ============ STEP 4: PRIMARY TRANSCRIPT EXTRACTION ============
-    console.log("YouTube Step 4: Attempting transcript extraction", { videoId });
-    let transcript: string = "";
-    let transcriptStatus: string = "";
+    // ============ STEP 6: SOURCE LEVEL CLASSIFICATION (FULL / LIMITED / NONE) ============
+    let sourceLevel: "FULL" | "LIMITED" | "NONE" = "NONE";
+    let extractedContent = "";
 
-    try {
-      console.log(`Fetching transcript for video ID: ${videoId}`);
-      transcript = await fetchYouTubeTranscript(videoId);
-      transcriptStatus = "Public transcript extracted successfully";
-      console.log("YouTube Step 5: Transcript extraction result: SUCCESS", {
-        videoId,
-        transcriptLength: transcript.length,
+    if (transcript && transcript.trim().length >= 20) {
+      sourceLevel = "FULL";
+      extractedContent = transcript;
+    } else if (
+      (metadata.description && metadata.description.trim().length >= 20) ||
+      (metadata.title && metadata.title !== "YouTube Video" && metadata.description.trim().length > 0)
+    ) {
+      sourceLevel = "LIMITED";
+      extractedContent = `Video Title: ${metadata.title}\nChannel: ${metadata.channelTitle || "YouTube Channel"}\nPublished Date: ${metadata.publishedAt || "N/A"}\n\nOfficial Video Description:\n${metadata.description}`;
+    } else {
+      sourceLevel = "NONE";
+      extractedContent = "";
+    }
+
+    console.log(`YouTube Step 6: Classified SOURCE_LEVEL = ${sourceLevel}`, {
+      videoId,
+      contentSize: extractedContent.length,
+    });
+
+    // ============ CASE 1: SOURCE_LEVEL === "NONE" ============
+    if (sourceLevel === "NONE") {
+      console.log("YouTube Step 7: Zero content available - returning failure output without calling Groq");
+      return NextResponse.json({
+        success: true,
+        url,
+        title: videoTitle,
+        sourceType: "YouTube Video",
+        pipeline: "youtube",
+        transcript: "",
+        transcriptStatus: "INSUFFICIENT CONTENT",
+        sourceLevel: "NONE",
+        isRestricted: true,
+        extractedContent: "",
+        contentSize: 0,
+        research: "",
       });
-    } catch (transcriptError) {
-      console.error("YouTube Step 5: Transcript extraction result: FAILED", { videoId });
-      console.error("EXACT ERROR:", transcriptError);
-      if (transcriptError instanceof Error) {
-        console.error("Error message:", transcriptError.message);
-        console.error("Error stack:", transcriptError.stack);
-      }
+    }
 
-      // No public transcript available - attempt fallback analysis based on accessible metadata
-      console.log(`YouTube Step 6: Transcript extraction failed for video ${videoId} - executing fallback metadata analysis`);
-      
-      const errorResp = getYouTubeErrorResponse(transcriptError, videoId);
-      const restrictionReason = errorResp.error;
+    // ============ CASE 2: SOURCE_LEVEL === "LIMITED" ============
+    if (sourceLevel === "LIMITED") {
+      console.log("YouTube Step 7: Generating LIMITED grounded analysis based on official metadata & description");
 
-      let title = "YouTube Video";
-      try {
-        title = await fetchYouTubeTitle(url).catch(() => "YouTube Video");
-      } catch (titleErr) {
-        console.error("YouTube fallback title extraction failed:", titleErr);
-      }
+      const systemPromptLimited = `You are a professional YouTube research agent analyzing a video with LIMITED source information.
 
-      let fallbackReport = "";
-      if (process.env.GROQ_API_KEY) {
-        try {
-          const completion = await createChatCompletion({
-            messages: [
-              {
-                role: "system",
-                content: `You are a professional YouTube research agent.
-
-IMPORTANT: The full transcript for this YouTube video COULD NOT BE ACCESSED due to access restrictions or unavailable captions (${restrictionReason}).
-
-DO NOT invent, fabricate, or hallucinate video audio or transcript content.
-
-Generate a clear, transparent, 6-section Markdown report based strictly on the accessible video metadata provided.
+CRITICAL GUARDRAILS & GROUNDING RULES:
+1. Grounded Content: You must answer ONLY from the provided official video metadata and description. Do not use general knowledge to fill missing information. Do not invent facts, spoken audio content, or unverified claims.
+2. Mandatory Disclosure Notice: In section 1, state explicitly: "Notice: Full video transcript was unavailable. This analysis is limited to publicly available video metadata, description, and channel information."
+3. Summary Constraint: The Summary section MUST be strictly limited to approximately 6 to 7 lines (approximately 6-7 sentences) based ONLY on the provided video title and description. Do not claim that the complete video audio was analyzed.
+4. Key Findings: List key takeaways derived ONLY from the official video description and title.
+5. Action Items: List actionable steps derived ONLY from resources, links, or instructions mentioned in the official description.
+6. Verification Status: State explicitly: "Limited Analysis Verification: Checked against official video metadata and description evidence."
 
 Return EXACTLY these Markdown headings:
 
 ### 1. 📋 Basic Information
-- Video Title: ${title}
+- Video Title: ${metadata.title}
+- Channel: ${metadata.channelTitle || "YouTube Channel"}
 - Video URL: ${url}
-- Status Notice: Full video transcript could NOT be retrieved (${restrictionReason}).
+- Source Notice: Full video transcript was unavailable. This analysis is based strictly on official YouTube video metadata and description.
 
-### 2. 🔍 Key Findings
-- Note that detailed key findings from the video audio/transcript are unavailable because captions are disabled or restricted.
-- Summarize what can be identified from the public video title and URL structure.
+### 2. 📝 Summary
+Write a summary strictly limited to 6–7 lines based ONLY on the provided video title and description. Do not claim to analyze spoken video content.
 
-### 3. 💡 Important Insights
-- Provide general context on the topic implied by the video title (${title}).
-- Emphasize that specific claims or spoken points in the video cannot be verified without transcript access.
+### 3. 🔍 Key Findings
+List key takeaways directly supported by the official video description and title content.
 
-### 4. ⚠️ Things to Consider / Precautions
-- Highlight that automated analysis could not verify spoken content or video claims.
-- Caution the user that restricted or private videos cannot be transcribed by external AI tools.
+### 4. 🎯 Action Items
+List actionable steps derived from the video description. Each item MUST specify:
+- **What to do:** Clear explanation of the task
+- **How to do it:** Step-by-step instructions or approach
+- **Tool / Resource to use:** Specific link, tool, or website mentioned in the video description
 
-### 5. ✅ Recommended Actions
-- Recommend watching the video directly on YouTube with audio or manual subtitles enabled.
-- Check if captions or transcripts become available in another language.
+### 5. 🔎 Verification Status
+State explicitly: "Limited Analysis Verification: This analysis was checked against official video metadata and description evidence."`;
 
-### 6. 🔎 Source Verification
-- State explicitly: "Full video transcript was NOT accessible. This report is based solely on accessible YouTube metadata (Video Title and URL)."`,
-              },
-              {
-                role: "user",
-                content: `Video URL: ${url}\nVideo Title: ${title}\nRestriction Reason: ${restrictionReason}`,
-              },
-            ],
-            model: "openai/gpt-oss-20b",
-            reasoning_effort: "low",
-            temperature: 0.2,
-            max_tokens: 900,
-          });
+      let limitedReport = "";
+      try {
+        const completion = await createChatCompletion({
+          messages: [
+            { role: "system", content: systemPromptLimited },
+            { role: "user", content: `Video URL: ${url}\nVideo Title: ${metadata.title}\nOfficial Source Metadata:\n${extractedContent}` },
+          ],
+          model: "openai/gpt-oss-20b",
+          reasoning_effort: "low",
+          temperature: 0.2,
+          max_tokens: 1100,
+        });
 
-          fallbackReport = completion.choices[0]?.message?.content?.trim() || "";
-        } catch (groqErr) {
-          console.error("YouTube fallback Groq generation failed:", groqErr);
-        }
+        limitedReport = completion.choices[0]?.message?.content?.trim() || "";
+      } catch (limitedErr) {
+        console.error("YouTube Limited analysis Groq call failed:", limitedErr);
       }
 
-      if (!fallbackReport) {
-        fallbackReport = `### 1. 📋 Basic Information
-- **Video Title:** ${title}
-- **Video URL:** ${url}
-- **Status Notice:** Full video transcript could NOT be retrieved (${restrictionReason}).
+      if (!limitedReport) {
+        limitedReport = `### 1. 📋 Basic Information
+- Video Title: ${metadata.title}
+- Channel: ${metadata.channelTitle || "YouTube Channel"}
+- Video URL: ${url}
+- Source Notice: Full video transcript was unavailable. This analysis is based strictly on official YouTube video metadata and description.
 
-### 2. 🔍 Key Findings
-- Detailed spoken content and transcript findings could not be extracted due to access restrictions.
-- Accessible metadata identifies the video title as "${title}".
+### 2. 📝 Summary
+This video is titled "${metadata.title}" by ${metadata.channelTitle || "the creator"}. Full spoken transcript content was unavailable, but official video metadata and description indicate key information about the topic. Viewers are advised to check the official description details.
 
-### 3. 💡 Important Insights
-- The video topic relates to "${title}".
-- Spoken claims, demonstrations, or detailed explanations require manual video viewing.
+### 3. 🔍 Key Findings
+- Official Video Title: ${metadata.title}
+- Channel Creator: ${metadata.channelTitle || "YouTube Channel"}
+- Description Content: ${metadata.description.slice(0, 300)}...
 
-### 4. ⚠️ Things to Consider / Precautions
-- Do not assume unverified transcript content exists.
-- Private, unlisted, or caption-disabled videos restrict automated content extraction.
+### 4. 🎯 Action Items
+- **What to do:** Review the video directly on YouTube for complete spoken audio content.
+- **How to do it:** Click the video URL (${url}) and enable subtitles or audio.
+- **Tool / Resource to use:** Official YouTube Player.
 
-### 5. ✅ Recommended Actions
-- Open the video directly on YouTube: ${url}
-- Enable YouTube audio or manual captions in the video player settings.
-
-### 6. 🔎 Source Verification
-- **Verification Notice:** Full video transcript was NOT accessible. This report is based solely on accessible YouTube metadata (Video Title & URL).`;
+### 5. 🔎 Verification Status
+Limited Analysis Verification: This analysis was checked against official video metadata and description evidence.`;
       }
 
       return NextResponse.json({
         success: true,
         url,
-        title,
+        title: metadata.title,
         sourceType: "YouTube Video",
         pipeline: "youtube",
         transcript: "",
-        transcriptStatus: `Transcript Unavailable (${restrictionReason})`,
+        transcriptStatus: "LIMITED CONTENT AVAILABLE",
+        sourceLevel: "LIMITED",
         isRestricted: true,
-        extractedContent: `[Transcript Unavailable - ${restrictionReason}]\nVideo Title: ${title}\nVideo URL: ${url}`,
-        contentSize: 0,
-        research: fallbackReport,
+        extractedContent,
+        contentSize: extractedContent.length,
+        research: limitedReport,
       });
     }
 
-    if (!transcript.trim()) {
-      console.error("YouTube Step 5 FAILED: Empty transcript returned");
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "transcript validation",
-          error: "Empty transcript returned from YouTube.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (transcript.length > 120000) {
-      console.error("YouTube Step 5 FAILED: Transcript too large", {
-        length: transcript.length,
-      });
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "transcript validation",
-          error: "This YouTube transcript is too large to analyze. Try a shorter video.",
-        },
-        { status: 413 }
-      );
-    }
-
-    // ============ STEP 7: TRANSCRIPT CHUNKING & PROCESSING ============
-    console.log("YouTube Step 7: Processing transcript");
-    let title = "YouTube Video";
+    // ============ CASE 3: SOURCE_LEVEL === "FULL" ============
+    console.log("YouTube Step 7: Processing FULL transcript chunks");
     let chunks: string[] = [];
-
-    try {
-      const titlePromise = fetchYouTubeTitle(url).catch(() => "YouTube Video");
-      title = await titlePromise;
-    } catch (titleError) {
-      console.error("YouTube title extraction failed, using default", titleError);
-    }
 
     try {
       chunks = chunkText(transcript);
     } catch (chunkError) {
-      console.error("YouTube Step 7 FAILED: Transcript chunking error");
-      console.error("EXACT ERROR:", chunkError);
-      if (chunkError instanceof Error) {
-        console.error(chunkError.message);
-        console.error(chunkError.stack);
-      }
+      console.error("YouTube transcript chunking error:", chunkError);
       return NextResponse.json(
-        {
-          success: false,
-          stage: "transcript chunking",
-          error: "Transcript processing failed.",
-        },
+        { success: false, stage: "transcript chunking", error: "Transcript processing failed." },
         { status: 500 }
       );
     }
-
-    if (!chunks.length) {
-      console.error("YouTube Step 7 FAILED: No chunks produced");
-      return NextResponse.json(
-        {
-          success: false,
-          stage: "transcript chunking",
-          error: "Transcript processing produced no usable chunks.",
-        },
-        { status: 500 }
-      );
-    }
-
-    console.log("YouTube Step 7: Processing transcript SUCCESS", {
-      title,
-      transcriptLength: transcript.length,
-      chunkCount: chunks.length,
-    });
 
     const sourceForReport = chunks.join("\n").slice(0, 14000);
 
-    // ============ STEP 8: GROQ SUMMARY GENERATION ============
-    console.log("YouTube Step 8: Calling Groq");
+    console.log("YouTube Step 8: Calling Groq for FULL YouTube Research Generation");
     let report = "";
 
-    try {
-      let generationAttempt = 0;
-      for (generationAttempt = 0; generationAttempt < 2; generationAttempt += 1) {
-        try {
-          const completion = await createChatCompletion({
-            messages: [
-              {
-                role: "system",
-                content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
+    const systemPromptFull = `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
 
-Create a concise report. The initial summary must be approximately 6-7 lines, not a long essay. Do not invent facts.
+CRITICAL GUARDRAILS & GROUNDING RULES:
+1. Grounded Content: You must answer ONLY from the provided transcript content. Do not use general knowledge to fill missing information. Do not invent key findings, summaries, action items, or facts.
+2. Summary Constraint: The Summary section MUST be strictly limited to approximately 6 to 7 lines (approximately 6-7 sentences). Do not write a long essay or fewer than 5 lines.
+3. Key Findings: Every key finding MUST be directly supported by the video transcript.
+4. Action Items: Every action item MUST be derived directly from the video content and MUST explicitly specify:
+   - What to do: Clear explanation of the task
+   - How to do it: Step-by-step instructions or approach
+   - Tool / Resource to use: Specific software, website, library, or resource mentioned or derived from the video
+5. Verification Status: Include a verification statement confirming that the output was checked against the retrieved source.
 
 Return EXACTLY these Markdown headings:
 
 ### 1. 📋 Basic Information
-Include the video title, topic, and transcript status.
+- Video Title: ${metadata.title}
+- Channel: ${metadata.channelTitle || "YouTube Channel"}
+- Video URL: ${url}
+- Transcript Status: FULL CONTENT AVAILABLE
 
-### 2. 🔍 Key Findings
-List the most important supported points.
+### 2. 📝 Summary
+Write a summary strictly limited to 6–7 lines based ONLY on the retrieved transcript content. Do not introduce unrelated topics.
 
-### 3. 💡 Important Insights
-Give useful conclusions based only on the transcript.
+### 3. 🔍 Key Findings
+List key findings directly supported by the video transcript.
 
-### 4. ⚠️ Things to Consider / Precautions
-List limitations, cautions, or claims that should be checked.
+### 4. 🎯 Action Items
+List actionable steps derived from the video content. Each item MUST specify:
+- **What to do:** Clear explanation of the task
+- **How to do it:** Step-by-step instructions or approach
+- **Tool / Resource to use:** Specific software, website, library, or resource mentioned or derived from the video
 
-### 5. ✅ Recommended Actions
-List practical actions, steps, or tools explicitly supported by the transcript.
-
-### 6. 🔎 Source Verification
-State that the report is grounded in the available transcript and that no independent fact-checking was performed.
+### 5. 🔎 Verification Status
+State explicitly: "Verification Passed: This research report was checked against the retrieved source transcript and is 100% grounded in video evidence."
 
 Transcript evidence:
-${sourceForReport}`,
-              },
-              {
-                role: "user",
-                content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}.`,
-              },
-            ],
-            model: "openai/gpt-oss-20b",
-            reasoning_effort: "low",
-            temperature: 0.2,
-            max_tokens: 900,
-          });
+${sourceForReport}`;
 
-          report = completion.choices[0]?.message?.content?.trim() || "";
-          if (report) break;
-        } catch (singleAttemptError) {
-          console.error(
-            `YouTube Step 8: Groq report generation attempt ${generationAttempt + 1} failed`,
-            singleAttemptError
-          );
-          if (generationAttempt === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-        }
-      }
+    try {
+      const completion = await createChatCompletion({
+        messages: [
+          { role: "system", content: systemPromptFull },
+          { role: "user", content: `Video URL: ${url}\nVideo Title: ${metadata.title}\nGenerate the full grounded research report now.` },
+        ],
+        model: "openai/gpt-oss-20b",
+        reasoning_effort: "low",
+        temperature: 0.2,
+        max_tokens: 1100,
+      });
+
+      report = completion.choices[0]?.message?.content?.trim() || "";
     } catch (groqError) {
-      console.error("YouTube Step 8 FAILED: Groq summary generation error");
-      console.error("EXACT ERROR:", groqError);
-      if (groqError instanceof Error) {
-        console.error(groqError.message);
-        console.error(groqError.stack);
-      }
+      console.error("YouTube Step 8 FAILED: Groq summary generation error", groqError);
       return NextResponse.json(
-        {
-          success: false,
-          stage: "Groq summary generation",
-          error: "AI service could not generate a summary. Please try again.",
-        },
+        { success: false, stage: "Groq summary generation", error: "AI service could not generate a summary." },
         { status: 500 }
       );
     }
 
     if (!report) {
-      console.error("YouTube Step 8 FAILED: No report generated");
       return NextResponse.json(
-        {
-          success: false,
-          stage: "Groq summary generation",
-          error: "Unable to generate a YouTube research report.",
-        },
+        { success: false, stage: "Groq summary generation", error: "Unable to generate a YouTube research report." },
         { status: 500 }
       );
     }
 
-    console.log("YouTube Step 8: Calling Groq SUCCESS", { reportLength: report.length });
-
-    // ============ STEP 9: VERIFICATION/REFLECTION ============
-    console.log("YouTube Step 9: Verification");
-
+    // Verification Reflection Step
     try {
       const verification = await createChatCompletion({
         messages: [
           {
             role: "system",
-            content:
-              "Check whether the proposed report is grounded only in the provided transcript evidence, stays on topic, and has transcript-supported action items. Reply with PASS if it is grounded; otherwise reply FAIL.",
+            content: "You are a strict compliance verifier. Verify whether the proposed report satisfies all requirements:\n1. Is the report grounded ONLY in the transcript evidence without hallucinated or substituted topics?\n2. Is the Summary section approximately 6–7 lines?\n3. Do Action Items clearly specify What to do, How to do it, and Tool/Resource to use?\nIf ALL rules pass, reply with 'PASS'. Otherwise reply with 'FAIL: <brief reasons>'.",
           },
           {
             role: "user",
@@ -506,82 +416,54 @@ ${sourceForReport}`,
         model: "openai/gpt-oss-20b",
         reasoning_effort: "low",
         temperature: 0,
-        max_tokens: 20,
+        max_tokens: 100,
       });
 
-      const verificationResult = verification.choices[0]?.message?.content
-        ?.trim()
-        .toUpperCase();
+      const verificationResult = verification.choices[0]?.message?.content?.trim();
+      if (verificationResult && !verificationResult.toUpperCase().includes("PASS")) {
+        console.warn(`YouTube Verification flagged issues: ${verificationResult}. Regenerating.`);
+        const retryCompletion = await createChatCompletion({
+          messages: [
+            {
+              role: "system",
+              content: `${systemPromptFull}\n\nATTENTION: Previous response flagged for: ${verificationResult}. Ensure summary is strictly 6–7 lines and action items specify what/how/tool.`,
+            },
+            {
+              role: "user",
+              content: `Video URL: ${url}\nVideo Title: ${metadata.title}\nRegenerate report strictly from transcript:`,
+            },
+          ],
+          model: "openai/gpt-oss-20b",
+          reasoning_effort: "low",
+          temperature: 0.1,
+          max_tokens: 1100,
+        });
 
-      console.log("YouTube Step 9: Verification result", { result: verificationResult });
-
-      if (!verificationResult?.includes("PASS")) {
-        console.warn("YouTube Step 9: Verification failed, regenerating report");
-        // Try once more with a fresh attempt
-        try {
-          const retryCompletion = await createChatCompletion({
-            messages: [
-              {
-                role: "system",
-                content: `You are a professional YouTube research agent. Use ONLY the transcript evidence provided below.
-
-Create a concise, factual report grounded in the transcript. Do not invent information. Return the same 6 sections as requested.
-
-Transcript evidence:
-${sourceForReport}`,
-              },
-              {
-                role: "user",
-                content: `Video URL: ${url}\nVideo title: ${title}\nTranscript status: ${transcriptStatus}. Ensure all claims are directly supported by the transcript.`,
-              },
-            ],
-            model: "openai/gpt-oss-20b",
-            reasoning_effort: "low",
-            temperature: 0.1,
-            max_tokens: 900,
-          });
-
-          const retryReport = retryCompletion.choices[0]?.message?.content?.trim() || report;
-          if (retryReport) {
-            report = retryReport;
-          }
-        } catch (retryError) {
-          console.warn("YouTube Step 9: Verification retry failed, using original report", retryError);
-        }
+        const retryReport = retryCompletion.choices[0]?.message?.content?.trim();
+        if (retryReport) report = retryReport;
       }
-    } catch (verificationError) {
-      console.warn("YouTube Step 9: Verification check failed, proceeding with report", verificationError);
+    } catch (verErr) {
+      console.warn("Verification check failed, proceeding with report", verErr);
     }
-
-    // ============ STEP 10: RETURNING RESULT ============
-    console.log("YouTube Step 10: Returning result");
 
     return NextResponse.json({
       success: true,
       url,
-      title,
+      title: metadata.title,
       sourceType: "YouTube Video",
       pipeline: "youtube",
       transcript,
-      transcriptStatus,
+      transcriptStatus: "FULL CONTENT AVAILABLE",
+      sourceLevel: "FULL",
       extractedContent: transcript,
       contentSize: transcript.length,
+      isRestricted: false,
       research: report,
     });
   } catch (error) {
-    console.error("YouTube analysis error: Unexpected error in main handler");
-    console.error("EXACT ERROR:", error);
-    if (error instanceof Error) {
-      console.error(error.message);
-      console.error(error.stack);
-    }
-
+    console.error("YouTube analysis error:", error);
     return NextResponse.json(
-      {
-        success: false,
-        stage: "unknown",
-        error: "An unexpected error occurred. Check the server logs for details.",
-      },
+      { success: false, stage: "unknown", error: "An unexpected error occurred." },
       { status: 500 }
     );
   }

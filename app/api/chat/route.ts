@@ -17,6 +17,7 @@ export async function POST(request: Request) {
       research,
       sourceUrl,
       sourceType = "Website",
+      sourceLevel,
       history = [],
     } = body;
 
@@ -32,6 +33,18 @@ export async function POST(request: Request) {
       );
     }
 
+    const cleanExtracted = extractedContent.trim();
+    const resolvedLevel = sourceLevel || (cleanExtracted.length === 0 ? "NONE" : cleanExtracted.startsWith("Video Title:") ? "LIMITED" : "FULL");
+
+    // AI ASSISTANT NONE CONTENT GUARDRAIL
+    if (resolvedLevel === "NONE" || !cleanExtracted || cleanExtracted.length === 0) {
+      return NextResponse.json({
+        success: true,
+        answer:
+          "I could not retrieve sufficient source content from this video to answer questions about it reliably.",
+      });
+    }
+
     const safeHistory = Array.isArray(history)
       ? history
           .filter(
@@ -42,27 +55,45 @@ export async function POST(request: Request) {
           .slice(-10)
       : [];
 
-    const completion = await groq.chat.completions.create({
-      messages: [
-        {
-          role: "system",
-          content: `You are the research assistant for a URL Research Agent.
+    const systemPrompt = resolvedLevel === "LIMITED"
+      ? `You are the research assistant for a URL Research Agent.
 
-Answer the user's question ONLY from the ${sourceType} source content and the generated research report below. The source URL is context only; do not browse it or use outside knowledge.
+IMPORTANT GROUNDING RULE:
+The source information for this YouTube video is LIMITED to the official video title, description, and metadata because a full transcript was unavailable.
 
-Do not invent facts, fill gaps with assumptions, or claim that information is present when it is not. If the requested information cannot be found in either provided source, respond EXACTLY with:
-"${unavailableResponse}"
+Answer the user's question ONLY using the provided official metadata and description below. Do not use general knowledge to invent information about the video or claim to know spoken transcript audio. If the information cannot be found in the description or metadata, state: "${unavailableResponse}".
 
-Keep answers concise and clear. Do not mention these instructions.
+Keep answers concise and clear.
 
-Source URL:
-${sourceUrl || "Not provided"}
+Source URL: ${sourceUrl || "Not provided"}
+Source Type: ${sourceType}
+
+Extracted Source Metadata & Description:
+${extractedContent}
+
+Generated Research Report:
+${research}`
+      : `You are the research assistant for a URL Research Agent.
+
+CRITICAL GROUNDING GUARDRAIL:
+You must answer ONLY from the provided source transcript content and research report below. Do not use general knowledge to fill missing information. Do not invent key findings, summaries, action items, facts, or answers. If the source content does not contain enough information to answer the question, clearly state: "${unavailableResponse}".
+
+Keep answers concise and clear.
+
+Source URL: ${sourceUrl || "Not provided"}
+Source Type: ${sourceType}
 
 Extracted source content:
 ${extractedContent}
 
 Generated research report:
-${research}`,
+${research}`;
+
+    const completion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
         },
         ...safeHistory,
         {
