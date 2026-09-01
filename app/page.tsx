@@ -80,9 +80,11 @@ interface AnalysisResult {
   contentSize: number;
   research?: string;
   pipeline?: "website" | "youtube";
+  pipelineDisplay?: string;
   transcriptStatus?: string;
-  sourceLevel?: "FULL" | "LIMITED" | "NONE";
+  sourceLevel?: "FULL" | "LIMITED" | "AUTH_REQUIRED" | "NONE";
   isRestricted?: boolean;
+  isPrivate?: boolean;
 }
 
 interface ChatMessage {
@@ -262,8 +264,10 @@ export default function Home() {
         contentSize: data.contentSize || 0,
         research: data.research || "",
         pipeline: data.pipeline || "website",
+        pipelineDisplay: data.pipelineDisplay,
         transcriptStatus: data.transcriptStatus || "",
         sourceLevel: data.sourceLevel,
+        isPrivate: Boolean(data.isPrivate),
         isRestricted: Boolean(data.isRestricted),
       });
 
@@ -508,15 +512,15 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
     const activeResult = analysisResult || demoResult;
     const activeUrl = url || "https://youtu.be/ZWPGWBFkup4E7lsliM9VHZkdymP_75";
 
-    const activeLevel: "FULL" | "LIMITED" | "NONE" =
+    const activeLevel: "FULL" | "LIMITED" | "AUTH_REQUIRED" | "NONE" =
       activeResult.sourceLevel ||
       (activeResult.contentSize === 0 || !activeResult.extractedContent?.trim()
-        ? "NONE"
+        ? activeResult.isPrivate ? "AUTH_REQUIRED" : "NONE"
         : activeResult.transcriptStatus === "LIMITED CONTENT AVAILABLE" || activeResult.isRestricted
         ? "LIMITED"
         : "FULL");
 
-    const isZeroContent = activeLevel === "NONE";
+    const isZeroContent = activeLevel === "NONE" || activeLevel === "AUTH_REQUIRED";
     const researchSections = splitResearchSections(activeResult.research || "");
     const rawResearch = activeResult.research?.trim() || "";
 
@@ -525,6 +529,8 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
         ? "FULL CONTENT AVAILABLE"
         : activeLevel === "LIMITED"
         ? "LIMITED CONTENT AVAILABLE"
+        : activeLevel === "AUTH_REQUIRED"
+        ? "AUTHORIZATION REQUIRED"
         : "INSUFFICIENT CONTENT";
 
     const badgeText =
@@ -532,6 +538,8 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
         ? "✓ Full Content Available"
         : activeLevel === "LIMITED"
         ? "⚠️ Limited Metadata"
+        : activeLevel === "AUTH_REQUIRED"
+        ? "🔒 Authorization Required"
         : "⚠️ Insufficient Content";
 
     const badgeColor =
@@ -539,6 +547,8 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
         ? "#4ade80"
         : activeLevel === "LIMITED"
         ? "#fbbf24"
+        : activeLevel === "AUTH_REQUIRED"
+        ? "#60a5fa"
         : "#f87171";
 
     const badgeBg =
@@ -546,6 +556,8 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
         ? "rgba(34, 197, 94, 0.15)"
         : activeLevel === "LIMITED"
         ? "rgba(245, 158, 11, 0.15)"
+        : activeLevel === "AUTH_REQUIRED"
+        ? "rgba(59, 130, 246, 0.15)"
         : "rgba(239, 68, 68, 0.15)";
 
     const badgeBorder =
@@ -553,10 +565,23 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
         ? "1px solid rgba(34, 197, 94, 0.35)"
         : activeLevel === "LIMITED"
         ? "1px solid rgba(245, 158, 11, 0.35)"
+        : activeLevel === "AUTH_REQUIRED"
+        ? "1px solid rgba(59, 130, 246, 0.35)"
         : "1px solid rgba(239, 68, 68, 0.35)";
+
+    const pipelineText =
+      activeResult.pipelineDisplay ||
+      (activeResult.pipeline === "youtube" ? "YouTube Data API v3" : "DOM Crawler");
 
     const displayChat: ChatMessage[] = chatMessages.length > 0
       ? chatMessages
+      : activeLevel === "AUTH_REQUIRED"
+      ? [
+          {
+            role: "assistant",
+            content: "This video is private and requires authorization from its owner.",
+          },
+        ]
       : activeLevel === "NONE"
       ? [
           {
@@ -653,7 +678,7 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
               </div>
               <div className="banner-stat-item">
                 <span>Pipeline</span>
-                <strong>{activeResult.pipeline === "youtube" ? "YouTube Data API v3" : "DOM Crawler"}</strong>
+                <strong>{pipelineText}</strong>
               </div>
             </div>
           </div>
@@ -707,11 +732,38 @@ This video discusses the fundamentals of Artificial Intelligence, its evolution,
                   marginBottom: "14px",
                   lineHeight: "1.5"
                 }}>
-                  ⚠️ <strong>Limited Analysis Notice:</strong> Limited analysis based on publicly available video metadata and description because a full transcript could not be retrieved.
+                  ⚠️ <strong>Limited Analysis Notice:</strong> Full transcript was unavailable. This analysis is based on publicly available video metadata and description.
                 </div>
               )}
 
-              {activeLevel === "NONE" ? (
+              {activeLevel === "AUTH_REQUIRED" ? (
+                <div style={{
+                  padding: "24px",
+                  borderRadius: "14px",
+                  background: "rgba(59, 130, 246, 0.08)",
+                  border: "1px solid rgba(59, 130, 246, 0.25)",
+                  color: "#60a5fa",
+                  marginTop: "8px",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+                    <span style={{ fontSize: "22px" }}>🔒</span>
+                    <h4 style={{ fontSize: "16px", fontWeight: 700, color: "#93c5fd", margin: 0 }}>
+                      This video requires authorization from its owner.
+                    </h4>
+                  </div>
+                  {activeResult.title && (
+                    <p style={{ fontSize: "14px", color: "#e2e8f0", marginBottom: "10px" }}>
+                      <strong>Video Title:</strong> {activeResult.title}
+                    </p>
+                  )}
+                  <p style={{ fontSize: "14px", color: "#60a5fa", marginBottom: "14px", lineHeight: "1.5" }}>
+                    <strong>Source Status:</strong> AUTHORIZATION REQUIRED
+                  </p>
+                  <p style={{ fontSize: "13px", color: "#94a3b8", margin: 0, lineHeight: "1.5" }}>
+                    This YouTube video is private or restricted. Accessing private content requires explicit Google OAuth authorization from the video owner. The AI will not fabricate unverified content without authorization.
+                  </p>
+                </div>
+              ) : activeLevel === "NONE" ? (
                 <div style={{
                   padding: "24px",
                   borderRadius: "14px",

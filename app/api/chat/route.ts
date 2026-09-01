@@ -36,6 +36,13 @@ export async function POST(request: Request) {
     const cleanExtracted = extractedContent.trim();
     const resolvedLevel = sourceLevel || (cleanExtracted.length === 0 ? "NONE" : cleanExtracted.startsWith("Video Title:") ? "LIMITED" : "FULL");
 
+    if (resolvedLevel === "AUTH_REQUIRED") {
+      return NextResponse.json({
+        success: true,
+        answer: "This video is private and requires authorization from its owner.",
+      });
+    }
+
     // AI ASSISTANT NONE CONTENT GUARDRAIL
     if (resolvedLevel === "NONE" || !cleanExtracted || cleanExtracted.length === 0) {
       return NextResponse.json({

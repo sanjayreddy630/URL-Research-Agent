@@ -559,3 +559,33 @@ export async function fetchYouTubeTitle(url: string): Promise<string> {
 
   return "YouTube Video";
 }
+
+export async function checkYouTubePrivateVideo(videoId: string): Promise<boolean> {
+  try {
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const res = await fetchWithTimeout(
+      watchUrl,
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        },
+      },
+      3000
+    );
+    if (res.ok) {
+      const html = await res.text();
+      if (
+        html.includes("This video is private") ||
+        html.includes('"isPrivate":true') ||
+        html.includes("Private video") ||
+        html.includes("Requires authorization")
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return false;
+}
